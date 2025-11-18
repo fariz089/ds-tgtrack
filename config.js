@@ -16,14 +16,18 @@ module.exports = {
     url: process.env.MONITOR_URL,
     timeout: parseInt(process.env.MONITOR_TIMEOUT) || 30000,
   },
-browser: {
-  headless: process.env.BROWSER_HEADLESS === "true",
-  defaultViewport: null,
-  args: ["--start-maximized", `--user-data-dir=${path.join(__dirname, "chrome-session")}`],
-  // ➕ tambahkan baris ini:
-  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
-},
+  browser: {
+    headless: process.env.BROWSER_HEADLESS === "true",
+    defaultViewport: null,
+    args: ["--start-maximized", `--user-data-dir=${path.join(__dirname, "chrome-session")}`],
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
+  },
   whatsapp: {
     phoneNumber: process.env.WHATSAPP_PHONE_NUMBER,
   },
+  mongo: process.env.MONGO_URI,
+  googleMaps: {
+    apiKey: process.env.GOOGLE_MAPS_API_KEY || "YOUR_API_KEY_HERE",
+  },
+  oneWeekHistory: process.env.ONE_WEEK_HISTORY,
 };
