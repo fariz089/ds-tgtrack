@@ -1,0 +1,17 @@
+<div class="chart-container">
+    <h3>DSM Monitoring Data</h3>
+    <div id="dsmContent">Loading DSM data...</div>
+</div>
+
+<script>
+    function loadData(vehicle = 'all') {
+        const url = vehicle === 'all' ? '/api/dsm' : `/api/dsm?vehicle=${vehicle}`;
+        fetch(url)
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('dsmContent').innerHTML = 
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            });
+    }
+    loadData();
+</script>

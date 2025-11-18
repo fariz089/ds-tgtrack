@@ -1,0 +1,17 @@
+<div class="chart-container">
+    <h3>ADAS Monitoring Data</h3>
+    <div id="adasContent">Loading ADAS data...</div>
+</div>
+
+<script>
+    function loadData(vehicle = 'all') {
+        const url = vehicle === 'all' ? '/api/adas' : `/api/adas?vehicle=${vehicle}`;
+        fetch(url)
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('adasContent').innerHTML = 
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            });
+    }
+    loadData();
+</script>
