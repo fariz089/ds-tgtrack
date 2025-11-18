@@ -1,39 +1,23 @@
-// alarmStoreWorker.js
-
 const { getAlarmTypeName, getAlarmCategory } = require("./alarmTypes");
 const { fetchAlarmFiles } = require("./utils");
 const ADAS = require("./models/adas");
 const DSM = require("./models/dsm");
 
-/**
- * Worker khusus untuk:
- *  - Menyimpan SEMUA alarm ADAS & DSM ke MongoDB
- *  - Menunggu file evidence sampai lengkap (via fetchAlarmFiles)
- *  - Mengkonversi event_time ke zona waktu Asia/Jakarta
- */
 class AlarmStoreWorker {
-  /**
-   * @param {Object} axiosInstance - axios dari index.js
-   * @param {string} token - Bearer token TGTrack
-   * @param {string} organizeId - OrganizeId TGTrack
-   */
   constructor(axiosInstance, token, organizeId) {
     this.axios = axiosInstance;
     this.token = token;
     this.organizeId = organizeId;
-
     this.queue = [];
     this.isProcessing = false;
   }
 
-  // Dipanggil dari index.js setiap kali ada batch alarm baru
   addAlarms(alarms) {
     let added = 0;
 
     for (const alarm of alarms) {
       const category = getAlarmCategory(alarm.platform_alarm_id);
 
-      // Kita hanya simpan ADAS & DSM
       if (category !== "ADAS" && category !== "DSM") continue;
 
       const safetyInfo = alarm.additional?.safety_info;
@@ -60,15 +44,6 @@ class AlarmStoreWorker {
     }
   }
 
-  // Konversi event_time (timestamp ms) ke Date dengan zona waktu Jakarta (+7)
-  toJakartaDate(eventTimeMs) {
-    const utcDate = new Date(eventTimeMs);
-    // toLocaleString dengan timezone Asia/Jakarta → string → Date baru
-    return new Date(
-      utcDate.toLocaleString("en-US", { timeZone: "Asia/Jakarta" })
-    );
-  }
-
   async processQueue() {
     if (this.isProcessing) return;
     this.isProcessing = true;
@@ -79,39 +54,25 @@ class AlarmStoreWorker {
       const item = this.queue.shift();
       const { alarm, category, alarmType, speed, alarmKey } = item;
 
-      // --- 1. Ambil daftar file dari API (nunggu sampai lengkap) ---
       let files = [];
       try {
         if (alarmKey) {
-          files = await fetchAlarmFiles(
-            this.axios,
-            this.token,
-            this.organizeId,
-            alarmKey,
-            5, // targetFileCount minimal 5 file
-            120000 // maxWaitTime 120 detik
-          );
-        } else {
-          console.log(
-            `ℹ️ AlarmStoreWorker: ${alarm.vehicle_name} tidak punya alarm_key, skip fetch files`
-          );
+          files = await fetchAlarmFiles(this.axios, this.token, this.organizeId, alarmKey, 5, 120000);
         }
       } catch (err) {
-        console.error(
-          `✗ AlarmStoreWorker: gagal fetch files untuk ${alarm.vehicle_name}:`,
-          err.message
-        );
+        console.error(`✗ AlarmStoreWorker: gagal fetch files untuk ${alarm.vehicle_name}:`, err.message);
       }
 
-      // --- 2. Build dokumen untuk Mongo ---
       const baseDoc = {
         vehicle_name: alarm.vehicle_name,
         lpn: alarm.lpn,
         alarm_type: alarmType,
         speed: speed,
-        event_time: this.toJakartaDate(alarm.event_time), // waktu Jakarta
+        event_time: new Date(alarm.event_time),
         lat: alarm.lat,
         lng: alarm.lng,
+        alarm_key: alarmKey,
+        platform_alarm_id: alarm.platform_alarm_id,
         files: (files || []).map((f) => ({
           file_name: f.file_name,
           file_type: f.file_type,
@@ -121,17 +82,18 @@ class AlarmStoreWorker {
       };
 
       try {
+        let result;
         if (category === "ADAS") {
-          await ADAS.create(baseDoc);
+          result = await ADAS.findOneAndUpdate({ alarm_key: alarmKey }, baseDoc, { upsert: true, new: true });
         } else if (category === "DSM") {
-          await DSM.create(baseDoc);
+          result = await DSM.findOneAndUpdate({ alarm_key: alarmKey }, baseDoc, { upsert: true, new: true });
         }
 
-        console.log(
-          `✅ Simpan ${category} alarm ke DB: ${alarm.vehicle_name} - ${alarmType} (files: ${baseDoc.files.length})`
-        );
+        console.log(`✅ ${category}: ${alarm.vehicle_name} - ${alarmType} @ ${baseDoc.event_time.toISOString()}`);
       } catch (err) {
-        console.error("✗ Error simpan alarm ke MongoDB:", err.message);
+        if (err.code !== 11000) {
+          console.error(`✗ ${alarm.vehicle_name}:`, err.message);
+        }
       }
     }
 
