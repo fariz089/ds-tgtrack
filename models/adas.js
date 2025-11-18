@@ -1,21 +1,36 @@
 const mongoose = require("mongoose");
 
-const adasSchema = new mongoose.Schema({
-  vehicle_name: { type: String, required: true },
-  lpn: { type: String, required: true },
-  alarm_type: { type: String, required: true },
-  speed: { type: Number, required: true },
-  event_time: { type: Date, required: true },
-  lat: { type: Number, required: true },
-  lng: { type: Number, required: true },
-  files: [{
-    file_name: { type: String, required: true },
-    file_type: { type: Number, required: true },
-    file_size: { type: Number, required: true },
-    relative_path: { type: String, required: true }
-  }],
-});
+const adasSchema = new mongoose.Schema(
+  {
+    vehicle_name: String,
+    lpn: String,
+    alarm_type: String,
+    speed: Number,
+    event_time: Date,
+    lat: Number,
+    lng: Number,
+    alarm_key: String,
+    platform_alarm_id: Number,
+    files: [
+      {
+        file_name: String,
+        file_type: Number,
+        file_size: Number,
+        relative_path: String,
+      },
+    ],
+  },
+  {
+    timestamps: true,
+  }
+);
 
-const ADAS = mongoose.model('ADAS', adasSchema, 'adas');
+// Unique identifier dari API sebagai primary key
+adasSchema.index({ alarm_key: 1 }, { unique: true, sparse: true });
 
-module.exports = ADAS;
+// Index untuk query berdasarkan waktu dan kendaraan
+adasSchema.index({ event_time: -1 });
+adasSchema.index({ vehicle_name: 1 });
+adasSchema.index({ vehicle_name: 1, event_time: -1 });
+
+module.exports = mongoose.model("ADAS", adasSchema);

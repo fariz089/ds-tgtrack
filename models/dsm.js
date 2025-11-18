@@ -1,21 +1,36 @@
 const mongoose = require("mongoose");
 
-const dsmSchema = new mongoose.Schema({
-  vehicle_name: { type: String, required: true },
-  lpn: { type: String, required: true },
-  alarm_type: { type: String, required: true },
-  speed: { type: Number, required: true },
-  event_time: { type: Date, required: true },
-  lat: { type: Number, required: true },
-  lng: { type: Number, required: true },
-  files: [{
-    file_name: { type: String, required: true },
-    file_type: { type: Number, required: true },
-    file_size: { type: Number, required: true },
-    relative_path: { type: String, required: true }
-  }],
-});
+const dsmSchema = new mongoose.Schema(
+  {
+    vehicle_name: String,
+    lpn: String,
+    alarm_type: String,
+    speed: Number,
+    event_time: Date,
+    lat: Number,
+    lng: Number,
+    alarm_key: String,
+    platform_alarm_id: Number,
+    files: [
+      {
+        file_name: String,
+        file_type: Number,
+        file_size: Number,
+        relative_path: String,
+      },
+    ],
+  },
+  {
+    timestamps: true,
+  }
+);
 
-const DSM = mongoose.model('DSM', dsmSchema, 'dsm');
+// Unique identifier dari API sebagai primary key
+dsmSchema.index({ alarm_key: 1 }, { unique: true, sparse: true });
 
-module.exports = DSM;
+// Index untuk query berdasarkan waktu dan kendaraan
+dsmSchema.index({ event_time: -1 });
+dsmSchema.index({ vehicle_name: 1 });
+dsmSchema.index({ vehicle_name: 1, event_time: -1 });
+
+module.exports = mongoose.model("DSM", dsmSchema);
