@@ -3,12 +3,12 @@ services:
   ds-tgtrack:
     build: .
     ports:
-      - "8080:8080"  # WebSocket ke browser
+      - "8080:8080"
     volumes:
       - ./public:/app/public
       - ./models:/app/models
     env_file:
-      - .env
+      - .env.production
     depends_on:
       - mongo
 
