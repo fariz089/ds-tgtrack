@@ -1,0 +1,93 @@
+<!-- assistant.html -->
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI Driver Assistant</title>
+  <style>
+    body{font-family:Arial;background:#111;color:#fff;margin:0;padding:20px}
+    .chat{max-width:500px;margin:auto;background:#222;padding:20px;border-radius:12px}
+    .msg{margin:10px 0;padding:12px;border-radius:10px;max-width:85%}
+    .ai{background:#007bff;align-self:flex-start}
+    .user{background:#333;align-self:flex-end}
+    .chat-box{display:flex;flex-direction:column}
+    #input{width:100%;padding:10px;margin-top:10px;border:none;border-radius:8px}
+    button{padding:10px;background:#007bff;color:#fff;border:none;border-radius:8px;margin-top:5px}
+  </style>
+</head>
+<body>
+  <div class="chat">
+    <div class="chat-box" id="chatBox"></div>
+    <input type="text" id="input" placeholder="Balas..." />
+    <button onclick="send()">Kirim</button>
+  </div>
+
+  <script>
+    const ws = new WebSocket('ws://localhost:8080');
+    const chatBox = document.getElementById('chatBox');
+    const input = document.getElementById('input');
+
+    const questions = [
+      "Hai, mata Anda terlihat sering tertutup. Apakah sebaiknya menepi dan ganti driver?",
+      "Microsleep terdeteksi! Mau istirahat 15 menit?",
+      "Kelihatan lelah. Perlu saya cari rest area terdekat?",
+      "Anda menguap terus. Apakah aman melanjutkan?"
+    ];
+
+    function add(msg, type) {
+      const div = document.createElement('div');
+      div.className = `msg ${type}`;
+      div.textContent = msg;
+      chatBox.appendChild(div);
+      chatBox.scrollTop = chatBox.scrollHeight;
+      if (type === 'ai') speak(msg);
+    }
+
+    function speak(text) {
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = 'id-ID';
+      utter.rate = 0.9;
+      speechSynthesis.speak(utter);
+    }
+
+    function trigger() {
+      const q = questions[Math.floor(Math.random() * questions.length)];
+      add(q, 'ai');
+    }
+
+    ws.onmessage = e => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'dsm') trigger();
+    };
+
+    function send() {
+      const msg = input.value.trim();
+      if (!msg) return;
+      add(msg, 'user');
+      input.value = '';
+      setTimeout(() => add("Tetap fokus ya! Keselamatan nomor satu.", 'ai'), 1500);
+    }
+
+    // Tes: trigger otomatis setelah 5 detik
+    // setTimeout(trigger, 5000);
+      // Ambil data alert dari backend
+  fetch('/api/alerts')
+    .then(response => response.json())
+    .then(alerts => {
+      alerts.forEach(alert => {
+        displayAlert(alert);
+      });
+    })
+    .catch(error => console.error('Error fetching alerts:', error));
+
+  // Fungsi untuk menampilkan alert di UI
+  function displayAlert(alert) {
+    const alertList = document.getElementById('alertList');
+    const alertItem = document.createElement('li');
+    alertItem.textContent = `Vehicle: ${alert.vehicleName} | Alert: ${alert.alertType} | Speed: ${alert.speed} km/h`;
+    alertList.appendChild(alertItem);
+  }
+  </script>
+  <ul id="alertList"></ul>
+</body>
+</html>

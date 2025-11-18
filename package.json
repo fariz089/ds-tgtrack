@@ -1,0 +1,18 @@
+{
+  "name": "ds-tgtrack",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "2captcha": "^3.0.5-2",
+    "express": "^4.17.1",
+    "axios": "^1.13.2",
+    "dotenv": "^16.4.5",
+    "puppeteer": "^24.30.0",
+    "ws": "^8.14.2",
+    "mongoose": "^6.0.0"
+  }
+}
