@@ -203,15 +203,35 @@ function displayAlarmModal(data) {
 }
 
 function renderFilesList(files) {
-  const images = files.filter((f) => f.file_type === 1);
-  const videos = files.filter((f) => f.file_type === 2);
-  const others = files.filter((f) => f.file_type !== 1 && f.file_type !== 2);
-
-  // Base URL untuk file dari TGTrack
-  const getFileUrl = (relativePath) => {
-    if (relativePath.startsWith("http")) return relativePath;
-    return `https://ds.tgtrack.com${relativePath.startsWith("/") ? "" : "/"}${relativePath}`;
+  // Helper function to determine if file is image
+  const isImage = (file) => {
+    if (file.file_type === 1) return true;
+    const ext = file.file_name?.toLowerCase() || file.relative_path?.toLowerCase() || "";
+    return (
+      ext.endsWith(".jpg") ||
+      ext.endsWith(".jpeg") ||
+      ext.endsWith(".png") ||
+      ext.endsWith(".gif") ||
+      ext.endsWith(".bmp")
+    );
   };
+
+  // Helper function to determine if file is video
+  const isVideo = (file) => {
+    if (file.file_type === 2) return true;
+    const ext = file.file_name?.toLowerCase() || file.relative_path?.toLowerCase() || "";
+    return (
+      ext.endsWith(".mp4") ||
+      ext.endsWith(".avi") ||
+      ext.endsWith(".mov") ||
+      ext.endsWith(".wmv") ||
+      ext.endsWith(".flv")
+    );
+  };
+
+  const images = files.filter((f) => isImage(f));
+  const videos = files.filter((f) => isVideo(f));
+  const others = files.filter((f) => !isImage(f) && !isVideo(f));
 
   let html = "";
 
@@ -227,7 +247,7 @@ function renderFilesList(files) {
               return `
               <div class="image-thumb" onclick="viewFile('${fileUrl}', 1)">
                 <img src="${fileUrl}" alt="Image ${idx + 1}" loading="lazy" 
-                     onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect fill=%22%23ddd%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22%3ENo Image%3C/text%3E%3C/svg%3E'">
+                     onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=padding:10px;text-align:center;color:#999>Failed to load</div>'">
                 <div class="image-overlay">
                   <i class="fas fa-search-plus"></i>
                 </div>
@@ -300,6 +320,14 @@ function renderFilesList(files) {
   }
 
   return html;
+}
+
+function getFileUrl(relativePath) {
+  if (!relativePath) return "";
+  if (relativePath.startsWith("http://") || relativePath.startsWith("https://")) {
+    return relativePath;
+  }
+  return relativePath.startsWith("/") ? relativePath : `/${relativePath}`;
 }
 
 function viewFile(filePath, fileType) {
