@@ -5,27 +5,33 @@ const axios = require("axios");
 const config = require("./config");
 const LoginManager = require("./login");
 const AlarmFileQueue = require("./queue");
-const WhatsAppService = require("./whatsapp");
+// const WhatsAppService = require("./whatsapp"); // <-- NONAKTIF sementara
 const { sleep, isLoggedIn, interceptAuthData } = require("./utils");
-const mongoose = require('mongoose');
-const express = require('express');
+const mongoose = require("mongoose");
+const express = require("express");
 const app = express();
-const Alert = require('./models/alert');  // Import model alert
+const Alert = require("./models/alert"); // Import model alert
+const AlarmStoreWorker = require("./alarmStoreWorker");
 
-app.get('/api/alerts', async (req, res) => {
+// Endpoint simple untuk lihat Alert (bukan ADAS/DSM)
+app.get("/api/alerts", async (req, res) => {
   try {
-    const alerts = await Alert.find().sort({ timestamp: -1 }).limit(10);  // Ambil 10 alert terbaru
+    const alerts = await Alert.find().sort({ timestamp: -1 }).limit(10);
     res.json(alerts);
   } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch alerts' });
+    res.status(500).json({ message: "Failed to fetch alerts" });
   }
 });
 
+// NOTE: kamu belum pernah app.listen di sini, tapi biarkan dulu saja
+// app.listen(3000, () => console.log("Express listening on 3000"));
+
 // Koneksi ke MongoDB
-mongoose.connect('mongodb://root:example@mongo:27017/alertsDB?authSource=admin', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
+mongoose
+  .connect("mongodb://root:example@mongo:27017/alertsDB?authSource=admin", {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
   .then(() => console.log("MongoDB connected"))
   .catch((err) => console.error("MongoDB connection error:", err));
 
@@ -57,8 +63,22 @@ async function waitUntilNext15Seconds() {
   const waitMs = nextTime - now;
   const waitSec = Math.floor(waitMs / 1000);
 
-  console.log(`⏰ Tunggu ${waitSec}s sampai ${nextTime.toLocaleTimeString("id-ID")} untuk cycle berikutnya...`);
+  console.log(
+    `⏰ Tunggu ${waitSec}s sampai ${nextTime.toLocaleTimeString(
+      "id-ID"
+    )} untuk cycle berikutnya...`
+  );
   await sleep(waitMs);
+}
+
+// Helper untuk format waktu ke format API
+function formatTime(date) {
+  const pad = (n) => n.toString().padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+    date.getDate()
+  )}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
+    date.getSeconds()
+  )}+07:00`;
 }
 
 async function main() {
@@ -67,10 +87,10 @@ async function main() {
   let token;
   let organizeId;
 
-  // Initialize WhatsApp service
-  const whatsappService = new WhatsAppService();
+  // WhatsApp DINONAKTIFKAN dulu
+  const whatsappService = null; // new WhatsAppService();
 
-  // Global queue
+  // Global queue (masih dipakai untuk status / logging & file, tapi WA off)
   let globalQueue = null;
 
   try {
@@ -85,7 +105,10 @@ async function main() {
     });
 
     console.log("navigasi ke halaman...");
-    await page.goto(config.target.url, { waitUntil: "networkidle2", timeout: 30000 });
+    await page.goto(config.target.url, {
+      waitUntil: "networkidle2",
+      timeout: 30000,
+    });
 
     await sleep(2000);
     const alreadyLoggedIn = await isLoggedIn(page);
@@ -115,40 +138,36 @@ async function main() {
 
     console.log("✓ Token dan OrganizeId berhasil diambil\n");
 
-    // Buat global queue dengan WhatsApp service
-    globalQueue = new AlarmFileQueue(axios, token, organizeId, whatsappService, 5, 300000);
+    // Queue lama (untuk fetch file & log). WA sudah dimatikan via whatsappService = null
+    globalQueue = new AlarmFileQueue(
+      axios,
+      token,
+      organizeId,
+      whatsappService,
+      5,
+      300000
+    );
 
-    let cycleCount = 0;
+    // Worker untuk simpan ADAS & DSM
+    const alarmStoreWorker = new AlarmStoreWorker(axios, token, organizeId);
 
-    while (true) {
-      cycleCount++;
-      const now = new Date();
+    // Helper: fetch semua alarm dalam range waktu, pakai pagination
+    async function fetchAndProcessRange(startTime, endTime, options = {}) {
+      const { includeQueue = true, pageLimit = 200 } = options;
 
-      console.log("\n" + "=".repeat(60));
-      console.log(`🔄 CYCLE #${cycleCount} - ${now.toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })}`);
-      console.log("=".repeat(60) + "\n");
+      let pageNo = 1;
+      let fetchedTotal = 0;
 
-      if (cycleCount > 1) {
-        globalQueue.printStatus();
-        console.log("");
-      }
+      console.log(
+        `📡 Fetching safety alarms range ${formatTime(
+          startTime
+        )} -> ${formatTime(endTime)}`
+      );
 
-      try {
-        console.log("📡 Fetching safety alarms untuk 15 detik terakhir...\n");
-
-        const endTime = new Date();
-        const startTime = new Date(endTime.getTime() - 60000);
-
-        const formatTime = (date) => {
-          const pad = (n) => n.toString().padStart(2, "0");
-          return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
-            date.getHours()
-          )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}+07:00`;
-        };
-
+      while (true) {
         const requestData = {
-          page: 1,
-          limit: 10,
+          page: pageNo,
+          limit: pageLimit,
           start_time: formatTime(startTime),
           end_time: formatTime(endTime),
         };
@@ -170,29 +189,100 @@ async function main() {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
           "X-Api-Version": "1.0.4",
-          "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+          "sec-ch-ua":
+            '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
           "sec-ch-ua-mobile": "?0",
           "sec-ch-ua-platform": '"Windows"',
         };
 
-        console.log("Request range:", formatTime(startTime), "to", formatTime(endTime));
+        console.log(`   → Request page ${pageNo}, limit ${pageLimit}`);
 
-        const response = await axios.post("https://ds.tgtrack.com/api/jtt808/alarm/safety", requestData, { headers });
+        const response = await axios.post(
+          "https://ds.tgtrack.com/api/jtt808/alarm/safety",
+          requestData,
+          { headers }
+        );
         const safetyData = response.data;
 
-        console.log(`✓ Response code: ${safetyData.code}`);
-        console.log(`✓ Total alarms: ${safetyData.result?.total || 0}`);
-        console.log(`✓ Rows returned: ${safetyData.result?.rows?.length || 0}\n`);
+        const rows = safetyData.result?.rows || [];
+        const total = safetyData.result?.total || 0;
 
-        if (safetyData.code === 0 && safetyData.result && safetyData.result.rows && safetyData.result.rows.length > 0) {
-          const alarms = safetyData.result.rows;
-          const added = globalQueue.addAlarms(alarms);
+        console.log(
+          `   ✓ Page ${pageNo}: rows=${rows.length}, total=${total}`
+        );
 
+        if (!rows.length) {
+          break;
+        }
+
+        fetchedTotal += rows.length;
+
+        // Kirim ke worker simpan DB
+        alarmStoreWorker.addAlarms(rows);
+
+        // Untuk realtime saja, kita kirim ke globalQueue
+        if (includeQueue && globalQueue) {
+          const added = globalQueue.addAlarms(rows);
           if (added > 0 && !globalQueue.isProcessing) {
             globalQueue.startBackgroundWorker();
           }
+        }
+
+        // Kalau semua sudah ketarik, stop
+        if (fetchedTotal >= total) {
+          break;
+        }
+
+        pageNo++;
+      }
+
+      console.log(
+        `📦 Selesai fetch range. Total rows diproses: ${fetchedTotal}\n`
+      );
+    }
+
+    let cycleCount = 0;
+    let firstCycle = true; // ← cycle pertama: fetch 3 hari ke belakang
+
+    while (true) {
+      cycleCount++;
+      const now = new Date();
+
+      console.log("\n" + "=".repeat(60));
+      console.log(
+        `🔄 CYCLE #${cycleCount} - ${now.toLocaleString("id-ID", {
+          timeZone: "Asia/Jakarta",
+        })}`
+      );
+      console.log("=".repeat(60) + "\n");
+
+      if (cycleCount > 1 && globalQueue) {
+        globalQueue.printStatus();
+        console.log("");
+      }
+
+      try {
+        const endTime = new Date();
+        let startTime;
+
+        if (firstCycle) {
+          // CYCLE PERTAMA → ambil 3 hari penuh
+          const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+          startTime = new Date(endTime.getTime() - THREE_DAYS_MS);
+          console.log("🕒 MODE HISTORY: 3 hari ke belakang");
+          await fetchAndProcessRange(startTime, endTime, {
+            includeQueue: false, // history: tidak perlu WhatsApp/file queue
+            pageLimit: 200,
+          });
+          firstCycle = false;
         } else {
-          console.log("ℹ️ Tidak ada alarm baru dalam 15 detik terakhir\n");
+          // CYCLE BERIKUTNYA → realtime 60 detik terakhir
+          startTime = new Date(endTime.getTime() - 60000);
+          console.log("🕒 MODE REALTIME: 60 detik terakhir");
+          await fetchAndProcessRange(startTime, endTime, {
+            includeQueue: true, // realtime boleh tetap pakai queue (tanpa WA)
+            pageLimit: 50,
+          });
         }
       } catch (error) {
         console.error("✗ Error dalam cycle:", error.message);
@@ -203,8 +293,10 @@ async function main() {
           token = authData.token;
           organizeId = authData.organizeId || "61a22a23e0584dac";
 
-          globalQueue.token = token;
-          globalQueue.organizeId = organizeId;
+          if (globalQueue) {
+            globalQueue.token = token;
+            globalQueue.organizeId = organizeId;
+          }
         }
       }
 
