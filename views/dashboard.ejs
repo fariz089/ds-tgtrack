@@ -106,7 +106,26 @@
       </div>
     </div>
   </div>
-  <div id="map"></div>
+
+  <div style="position: relative">
+    <div id="map"></div>
+    <div class="map-controls">
+      <label class="control-item">
+        <input type="checkbox" id="toggleADAS" checked onchange="toggleAlarmType('ADAS')" />
+        <span class="control-label">
+          <div class="control-marker" style="background: #ef4444; clip-path: polygon(50% 0%, 100% 100%, 0% 100%)"></div>
+          ADAS Alarms
+        </span>
+      </label>
+      <label class="control-item">
+        <input type="checkbox" id="toggleDSM" checked onchange="toggleAlarmType('DSM')" />
+        <span class="control-label">
+          <div class="control-marker" style="background: #f59e0b; border-radius: 50%"></div>
+          DSM Alarms
+        </span>
+      </label>
+    </div>
+  </div>
 </div>
 
 <!-- Fleet Table Section -->

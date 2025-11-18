@@ -1,6 +1,7 @@
 let map;
 let markers = {};
 let infoWindows = {};
+let alarmMarkers = [];
 let selectedVehicle = null;
 
 // Load safety scores on page load
@@ -301,7 +302,6 @@ function renderFilesList(files) {
   return html;
 }
 
-
 function viewFile(filePath, fileType) {
   if (fileType === 1) {
     // Image viewer with navigation
@@ -339,7 +339,6 @@ function viewFile(filePath, fileType) {
   }
 }
 
-
 function closeAlarmModal() {
   const modal = document.getElementById("alarm-modal");
   if (modal) modal.remove();
@@ -374,9 +373,185 @@ async function loadFleetData() {
 
     updateMap(data);
     updateTable(data);
+    loadAlarmMarkers();
   } catch (err) {
     console.error("Error loading fleet data:", err);
   }
+}
+
+async function loadAlarmMarkers() {
+  try {
+    alarmMarkers.forEach((marker) => marker.setMap(null));
+    alarmMarkers = [];
+
+    const [adasResponse, dsmResponse] = await Promise.all([fetch("/api/adas?limit=50"), fetch("/api/dsm?limit=50")]);
+
+    const adasAlarms = await adasResponse.json();
+    const dsmAlarms = await dsmResponse.json();
+
+    // ADAS markers dengan blinking effect
+    adasAlarms.forEach((alarm) => {
+      if (alarm.lat && alarm.lng) {
+        const marker = new google.maps.Marker({
+          position: { lat: alarm.lat, lng: alarm.lng },
+          map: map,
+          title: `ADAS: ${alarm.alarm_type}`,
+          icon: {
+            url:
+              "data:image/svg+xml;charset=UTF-8," +
+              encodeURIComponent(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30">
+                <defs>
+                  <style>
+                    @keyframes blink {
+                      0%, 100% { opacity: 1; }
+                      50% { opacity: 0.3; }
+                    }
+                    .triangle {
+                      animation: blink 1.5s ease-in-out infinite;
+                    }
+                  </style>
+                </defs>
+                <polygon class="triangle" points="15,5 25,25 5,25" fill="#ef4444" stroke="white" stroke-width="2"/>
+              </svg>
+            `),
+            scaledSize: new google.maps.Size(30, 30),
+            anchor: new google.maps.Point(15, 25),
+          },
+          zIndex: 1000,
+        });
+
+        const infoWindow = new google.maps.InfoWindow({
+          content: getAlarmInfoWindowContent(alarm, "ADAS"),
+        });
+
+        marker.addListener("click", () => {
+          closeAllInfoWindows();
+          infoWindow.open(map, marker);
+        });
+
+        alarmMarkers.push(marker);
+      }
+    });
+
+    // DSM markers dengan pulse effect
+    dsmAlarms.forEach((alarm) => {
+      if (alarm.lat && alarm.lng) {
+        const marker = new google.maps.Marker({
+          position: { lat: alarm.lat, lng: alarm.lng },
+          map: map,
+          title: `DSM: ${alarm.alarm_type}`,
+          icon: {
+            url:
+              "data:image/svg+xml;charset=UTF-8," +
+              encodeURIComponent(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30">
+                <defs>
+                  <style>
+                    @keyframes pulse {
+                      0%, 100% { r: 8; opacity: 1; }
+                      50% { r: 12; opacity: 0.5; }
+                    }
+                    .circle {
+                      animation: pulse 2s ease-in-out infinite;
+                    }
+                  </style>
+                </defs>
+                <circle cx="15" cy="15" r="8" fill="#f59e0b" stroke="white" stroke-width="2"/>
+                <circle class="circle" cx="15" cy="15" r="8" fill="none" stroke="#f59e0b" stroke-width="2"/>
+              </svg>
+            `),
+            scaledSize: new google.maps.Size(30, 30),
+            anchor: new google.maps.Point(15, 15),
+          },
+          zIndex: 1000,
+        });
+
+        const infoWindow = new google.maps.InfoWindow({
+          content: getAlarmInfoWindowContent(alarm, "DSM"),
+        });
+
+        marker.addListener("click", () => {
+          closeAllInfoWindows();
+          infoWindow.open(map, marker);
+        });
+
+        alarmMarkers.push(marker);
+      }
+    });
+
+    console.log(`✓ Loaded ${adasAlarms.length} ADAS + ${dsmAlarms.length} DSM markers`);
+  } catch (err) {
+    console.error("Error loading alarm markers:", err);
+  }
+}
+
+function toggleAlarmType(type) {
+  const isADAS = type === "ADAS";
+  const color = isADAS ? "#ef4444" : "#f59e0b";
+
+  alarmMarkers.forEach((marker) => {
+    const title = marker.getTitle();
+    if (title.startsWith(type)) {
+      const checkbox = document.getElementById(`toggle${type}`);
+      marker.setVisible(checkbox.checked);
+    }
+  });
+}
+
+function getAlarmInfoWindowContent(alarm, type) {
+  const eventTime = new Date(alarm.event_time).toLocaleString("id-ID");
+  const bgColor = type === "ADAS" ? "#ef4444" : "#f59e0b";
+
+  return `
+    <div style="padding: 12px; min-width: 280px; font-family: system-ui;">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+        <div style="background: ${bgColor}; color: white; padding: 4px 12px; border-radius: 4px; font-weight: 600; font-size: 13px;">
+          ${type}
+        </div>
+        <div style="color: #666; font-size: 12px;">${eventTime}</div>
+      </div>
+      
+      <div style="margin-bottom: 10px;">
+        <div style="font-weight: 600; color: #333; font-size: 15px; margin-bottom: 5px;">
+          ${alarm.vehicle_name}
+        </div>
+        <div style="color: #555; font-size: 14px;">
+          ${alarm.alarm_type}
+        </div>
+      </div>
+      
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; color: #666;">
+        <div>
+          <i class="fas fa-tachometer-alt" style="color: ${bgColor}; margin-right: 5px;"></i>
+          <strong>${alarm.speed}</strong> km/h
+        </div>
+        <div>
+          <i class="fas fa-map-marker-alt" style="color: ${bgColor}; margin-right: 5px;"></i>
+          ${alarm.lat.toFixed(4)}, ${alarm.lng.toFixed(4)}
+        </div>
+      </div>
+      
+      ${
+        alarm.files && alarm.files.length > 0
+          ? `
+        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e0e0e0;">
+          <div style="color: #4CAF50; font-size: 12px;">
+            <i class="fas fa-paperclip"></i> ${alarm.files.length} file(s) available
+          </div>
+        </div>
+      `
+          : ""
+      }
+      
+      <div style="margin-top: 12px;">
+        <button onclick="showVehicleAlarms('${alarm.vehicle_name}', 1)" 
+                style="background: ${bgColor}; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; width: 100%;">
+          <i class="fas fa-list"></i> View All Alarms
+        </button>
+      </div>
+    </div>
+  `;
 }
 
 function updateMap(vehicles) {
