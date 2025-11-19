@@ -11,6 +11,8 @@ const WhatsAppService = require("./whatsapp");
 const { sleep, isLoggedIn, interceptAuthData } = require("./utils");
 const mongoose = require("mongoose");
 
+const { initWebSocketServer, broadcastToCopilot, broadcastGPSUpdate, broadcastDestination } = require("./ws-server");
+
 const app = express();
 
 const Alert = require("./models/alert");
@@ -37,9 +39,7 @@ const safetyScoreService = new SafetyScoreService();
 // Helper to get vehicles from database with fallback
 async function getVehiclesList() {
   try {
-    const vehicles = await Vehicle.find({ status: "active" })
-      .select("name")
-      .lean();
+    const vehicles = await Vehicle.find({ status: "active" }).select("name").lean();
 
     if (vehicles.length > 0) {
       return vehicles.map((v) => v.name).sort();
@@ -129,9 +129,7 @@ app.get("/api/alerts", async (req, res) => {
       query.vehicle = vehicle;
     }
 
-    const alerts = await Alert.find(query)
-      .sort({ timestamp: -1 })
-      .limit(parseInt(limit));
+    const alerts = await Alert.find(query).sort({ timestamp: -1 }).limit(parseInt(limit));
 
     res.json(alerts);
   } catch (err) {
@@ -140,28 +138,40 @@ app.get("/api/alerts", async (req, res) => {
   }
 });
 
-// API: Get ADAS data with optional filters
+// API: Get ADAS data with optional filters (support hours & startDate/endDate)
 app.get("/api/adas", async (req, res) => {
   try {
-    const { startDate, endDate, vehicle, limit = 100 } = req.query;
+    const { hours, startDate, endDate, vehicle, limit = 100 } = req.query;
     let query = {};
 
-    // Filter by vehicle name if specified
+    // Filter by vehicle name
     if (vehicle && vehicle !== "all") {
       query.vehicle_name = new RegExp(vehicle, "i");
     }
 
-    // Filter by date range if provided
+    // ✅ Filter by date range
+    let startTime, endTime;
+
     if (startDate && endDate) {
+      // Mode custom tanggal
+      startTime = new Date(startDate);
+      endTime = new Date(endDate);
+    } else if (hours) {
+      // Mode last X hours
+      const h = parseInt(hours) || 1;
+      endTime = new Date();
+      startTime = new Date(endTime.getTime() - h * 60 * 60 * 1000);
+    }
+
+    // Apply time filter
+    if (startTime && endTime) {
       query.event_time = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate),
+        $gte: startTime,
+        $lte: endTime,
       };
     }
 
-    const adasData = await ADAS.find(query)
-      .sort({ event_time: -1 })
-      .limit(parseInt(limit));
+    const adasData = await ADAS.find(query).sort({ event_time: -1 }).limit(parseInt(limit));
 
     res.json(adasData);
   } catch (err) {
@@ -170,28 +180,40 @@ app.get("/api/adas", async (req, res) => {
   }
 });
 
-// API: Get DSM data with optional filters
+// API: Get DSM data with optional filters (support hours & startDate/endDate)
 app.get("/api/dsm", async (req, res) => {
   try {
-    const { startDate, endDate, vehicle, limit = 100 } = req.query;
+    const { hours, startDate, endDate, vehicle, limit = 100 } = req.query;
     let query = {};
 
-    // Filter by vehicle name if specified
+    // Filter by vehicle name
     if (vehicle && vehicle !== "all") {
       query.vehicle_name = new RegExp(vehicle, "i");
     }
 
-    // Filter by date range if provided
+    // ✅ Filter by date range
+    let startTime, endTime;
+
     if (startDate && endDate) {
+      // Mode custom tanggal
+      startTime = new Date(startDate);
+      endTime = new Date(endDate);
+    } else if (hours) {
+      // Mode last X hours
+      const h = parseInt(hours) || 1;
+      endTime = new Date();
+      startTime = new Date(endTime.getTime() - h * 60 * 60 * 1000);
+    }
+
+    // Apply time filter
+    if (startTime && endTime) {
       query.event_time = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate),
+        $gte: startTime,
+        $lte: endTime,
       };
     }
 
-    const dsmData = await DSM.find(query)
-      .sort({ event_time: -1 })
-      .limit(parseInt(limit));
+    const dsmData = await DSM.find(query).sort({ event_time: -1 }).limit(parseInt(limit));
 
     res.json(dsmData);
   } catch (err) {
@@ -328,9 +350,7 @@ app.get("/api/coordinates/history/:imei", async (req, res) => {
       };
     }
 
-    const history = await Coordinate.find(query)
-      .sort({ event_time: -1 })
-      .limit(parseInt(limit));
+    const history = await Coordinate.find(query).sort({ event_time: -1 }).limit(parseInt(limit));
 
     res.json(history);
   } catch (err) {
@@ -391,15 +411,73 @@ app.get("/api/safety/fleet-score", async (req, res) => {
   }
 });
 
+// API: Get coordinate summary (speed rata-rata, mileage diff, satellites rata-rata)
+app.get("/api/coordinates/summary", async (req, res) => {
+  try {
+    const { hours, startDate, endDate } = req.query;
+
+    let startTime, endTime;
+
+    if (startDate && endDate) {
+      // Mode custom tanggal
+      startTime = new Date(startDate);
+      endTime = new Date(endDate);
+    } else {
+      // Mode last X hours
+      const h = parseInt(hours) || 1;
+      endTime = new Date();
+      startTime = new Date(endTime.getTime() - h * 60 * 60 * 1000);
+    }
+
+    // Aggregate per vehicle
+    const summary = await Coordinate.aggregate([
+      {
+        $match: {
+          event_time: { $gte: startTime, $lte: endTime },
+        },
+      },
+      {
+        $sort: { event_time: 1 }, // Sort ascending buat ambil first & last
+      },
+      {
+        $group: {
+          _id: "$vehicle_name",
+          vehicle_name: { $first: "$vehicle_name" },
+          avg_speed: { $avg: "$speed" },
+          first_mileage: { $first: "$mileage" },
+          last_mileage: { $last: "$mileage" },
+          avg_satellites: { $avg: "$additional.satellites" },
+          data_count: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          vehicle_name: 1,
+          avg_speed: 1,
+          mileage_diff: { $subtract: ["$last_mileage", "$first_mileage"] },
+          avg_satellites: 1,
+          data_count: 1,
+        },
+      },
+      {
+        $sort: { vehicle_name: 1 },
+      },
+    ]);
+
+    res.json(summary);
+  } catch (err) {
+    console.error("Error fetching coordinate summary:", err);
+    res.status(500).json({ message: "Failed to fetch summary" });
+  }
+});
+
 // API: Get vehicle safety score
 app.get("/api/safety/vehicle-score/:vehicleName", async (req, res) => {
   try {
     const { vehicleName } = req.params;
     const { hours = 1 } = req.query;
-    const vehicleScore = await safetyScoreService.calculateVehicleScore(
-      vehicleName,
-      parseInt(hours)
-    );
+    const vehicleScore = await safetyScoreService.calculateVehicleScore(vehicleName, parseInt(hours));
     res.json(vehicleScore);
   } catch (err) {
     console.error("Error calculating vehicle score:", err);
@@ -536,22 +614,16 @@ async function waitUntilNext15Seconds() {
   const waitMs = nextTime - now;
   const waitSec = Math.floor(waitMs / 1000);
 
-  console.log(
-    `⏰ Tunggu ${waitSec}s sampai ${nextTime.toLocaleTimeString(
-      "id-ID"
-    )} untuk cycle berikutnya...`
-  );
+  console.log(`⏰ Tunggu ${waitSec}s sampai ${nextTime.toLocaleTimeString("id-ID")} untuk cycle berikutnya...`);
   await sleep(waitMs);
 }
 
 // Format date to API-compatible format with timezone
 function formatTime(date) {
   const pad = (n) => n.toString().padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
-    date.getDate()
-  )}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
-    date.getSeconds()
-  )}+07:00`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(
+    date.getMinutes()
+  )}:${pad(date.getSeconds())}+07:00`;
 }
 
 async function main() {
@@ -610,19 +682,15 @@ async function main() {
     console.log("✓ Token dan OrganizeId berhasil diambil\n");
 
     // Initialize workers
-    globalQueue = new AlarmFileQueue(
-      axios,
-      token,
-      organizeId,
-      whatsappService,
-      5,
-      300000
-    );
-    const alarmStoreWorker = new AlarmStoreWorker(axios, token, organizeId);
+    globalQueue = new AlarmFileQueue(axios, token, organizeId, whatsappService, 5, 300000);
+    const alarmStoreWorker = new AlarmStoreWorker(axios, token, organizeId, 100);
 
     // Initialize and start coordinate worker
     coordinateWorker = new CoordinateWorker(axios, token, organizeId);
     coordinateWorker.start(10000); // Fetch coordinates every 10 seconds
+
+    // Initialize websocket
+    initWebSocketServer(8080);
 
     // Fetch and process alarms within time range with pagination
     async function fetchAndProcessRange(startTime, endTime, options = {}) {
@@ -631,11 +699,7 @@ async function main() {
       let pageNo = 1;
       let fetchedTotal = 0;
 
-      console.log(
-        `📡 Fetching safety alarms range ${formatTime(
-          startTime
-        )} -> ${formatTime(endTime)}`
-      );
+      console.log(`📡 Fetching safety alarms range ${formatTime(startTime)} -> ${formatTime(endTime)}`);
 
       while (true) {
         const requestData = {
@@ -662,46 +726,16 @@ async function main() {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
           "X-Api-Version": "1.0.4",
-          "sec-ch-ua":
-            '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+          "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
           "sec-ch-ua-mobile": "?0",
           "sec-ch-ua-platform": '"Windows"',
         };
 
-        console.log(`   → Request page ${pageNo}, limit ${pageLimit}`);
-
-        const response = await axios.post(
-          "https://ds.tgtrack.com/api/jtt808/alarm/safety",
-          requestData,
-          { headers }
-        );
+        const response = await axios.post("https://ds.tgtrack.com/api/jtt808/alarm/safety", requestData, { headers });
         const safetyData = response.data;
 
         const rows = safetyData.result?.rows || [];
         const total = safetyData.result?.total || 0;
-
-        // 🔍 DEBUG RAW ALARM DATA
-        if (rows.length > 0 && rows[0]) {
-          const firstAlarm = rows[0];
-          console.log("\n🔍 DEBUG RAW ALARM:");
-          console.log(
-            "  Request range:",
-            requestData.start_time,
-            "->",
-            requestData.end_time
-          );
-          console.log("  First alarm vehicle:", firstAlarm.vehicle_name);
-          console.log("  event_time (raw):", firstAlarm.event_time);
-          console.log("  event_time (Date):", new Date(firstAlarm.event_time));
-          console.log(
-            "  event_time (ISO):",
-            new Date(firstAlarm.event_time).toISOString()
-          );
-          console.log("");
-        }
-
-        console.log(`   ✓ Page ${pageNo}: rows=${rows.length}, total=${total}`);
-
         if (!rows.length) {
           break;
         }
@@ -724,9 +758,7 @@ async function main() {
         pageNo++;
       }
 
-      console.log(
-        `📦 Selesai fetch range. Total rows diproses: ${fetchedTotal}\n`
-      );
+      console.log(`📦 Selesai fetch range. Total rows diproses: ${fetchedTotal}\n`);
     }
 
     let cycleCount = 0;
@@ -735,17 +767,7 @@ async function main() {
     while (true) {
       cycleCount++;
       const now = new Date();
-
-      console.log("\n" + "=".repeat(60));
-      console.log(
-        `🔄 CYCLE #${cycleCount} - ${now.toLocaleString("id-ID", {
-          timeZone: "Asia/Jakarta",
-        })}`
-      );
-      console.log("=".repeat(60) + "\n");
-
       if (cycleCount > 1 && globalQueue) {
-        globalQueue.printStatus();
         console.log("");
       }
 
@@ -757,9 +779,7 @@ async function main() {
           const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
           startTime = new Date(endTime.getTime() - THREE_DAYS_MS);
           console.log("🕒 MODE HISTORY: 3 hari ke belakang");
-          console.log(
-            "⏳ Fetching historical data... This may take several minutes..."
-          );
+          console.log("⏳ Fetching historical data... This may take several minutes...");
 
           await fetchAndProcessRange(startTime, endTime, {
             includeQueue: false,
@@ -767,9 +787,7 @@ async function main() {
           });
 
           firstCycle = false;
-          console.log(
-            "✅ HISTORY MODE COMPLETED! Next cycle will be REALTIME.\n"
-          );
+          console.log("✅ HISTORY MODE COMPLETED! Next cycle will be REALTIME.\n");
         } else {
           startTime = new Date(endTime.getTime() - 60000);
           console.log("🕒 MODE REALTIME: 60 detik terakhir");

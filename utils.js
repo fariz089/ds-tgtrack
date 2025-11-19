@@ -235,13 +235,9 @@ async function fetchAlarmFiles(axios, token, organizeId, alarmKey, targetFileCou
           );
           return response.data.result;
         } else {
-          console.log(
-            `  ⏳ Retry ${retryCount} - File baru ${fileCount}/${targetFileCount} untuk alarm_key ${alarmKey}, tunggu lagi...`
-          );
           await sleep(3000);
         }
       } else {
-        console.log(`  ⏳ Retry ${retryCount} - File belum tersedia untuk alarm_key ${alarmKey}`);
         await sleep(3000);
       }
     } catch (error) {
