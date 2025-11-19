@@ -474,6 +474,82 @@ function closeImage() {
   modal.classList.remove("active");
 }
 
+function openCamera(imei, channel, vehicleName) {
+  console.log(`Opening camera: ${imei}, channel ${channel}`);
+
+  const modal = document.getElementById("videoModal");
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  info.textContent = `${vehicleName} - Camera ${channel} (Loading...)`;
+  modal.classList.add("active");
+
+  // Check FLV support
+  if (typeof flvjs === "undefined" || !flvjs.isSupported()) {
+    console.error("FLV.js not supported");
+    info.textContent = `${vehicleName} - Camera ${channel} (Player not supported)`;
+    return;
+  }
+
+  streamFLV(imei, channel, vehicleName);
+}
+
+// Stream FLV video
+function streamFLV(imei, channel, vehicleName) {
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  // Destroy previous player
+  if (flvPlayer) {
+    try {
+      flvPlayer.pause();
+      flvPlayer.unload();
+      flvPlayer.detachMediaElement();
+      flvPlayer.destroy();
+      flvPlayer = null;
+    } catch (err) {
+      console.error("Error destroying previous player:", err);
+    }
+  }
+
+  const streamUrl = `/api/video/stream/${imei}/${channel}`;
+  console.log("Stream URL:", streamUrl);
+
+  info.textContent = `${vehicleName} - Camera ${channel} (Connecting...)`;
+
+  try {
+    flvPlayer = flvjs.createPlayer({
+      type: "flv",
+      url: streamUrl,
+      isLive: true,
+      hasAudio: false,
+      cors: true,
+    });
+
+    flvPlayer.attachMediaElement(player);
+    flvPlayer.load();
+
+    flvPlayer.on(flvjs.Events.ERROR, (errorType, errorDetail) => {
+      console.error("FLV Error:", errorType, errorDetail);
+      info.textContent = `${vehicleName} - Camera ${channel} (Error: ${errorDetail})`;
+    });
+
+    flvPlayer
+      .play()
+      .then(() => {
+        console.log("Playing");
+        info.textContent = `${vehicleName} - Camera ${channel} (Live)`;
+      })
+      .catch((err) => {
+        console.error("Play error:", err);
+        info.textContent = `${vehicleName} - Camera ${channel} (Playback Error)`;
+      });
+  } catch (err) {
+    console.error("FLV init error:", err);
+    info.textContent = `${vehicleName} - Camera ${channel} (Init Error)`;
+  }
+}
+
 // Update close video function
 function closeVideo() {
   const modal = document.getElementById("videoModal");
