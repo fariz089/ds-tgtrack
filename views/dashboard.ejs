@@ -1,28 +1,69 @@
 <link rel="stylesheet" href="/css/dashboard.css" />
 
-
-<div style="margin-bottom: 15px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-  <div>
-    <label style="font-size:12px; color:#666;">Start date</label><br>
-    <input type="datetime-local" id="safetyStart" style="padding:4px 8px; font-size:12px;">
-  </div>
-  <div>
-    <label style="font-size:12px; color:#666;">End date</label><br>
-    <input type="datetime-local" id="safetyEnd" style="padding:4px 8px; font-size:12px;">
-  </div>
-  <div>
-    <label style="font-size:12px; color:#666;">Last (hours)</label><br>
-    <select id="safetyHours" style="padding:4px 8px; font-size:12px;">
-      <option value="1">1 jam</option>
-      <option value="3">3 jam</option>
-      <option value="5">5 jam</option>
-      <option value="24">24 jam</option>
-    </select>
-  </div>
-  <div style="margin-top:18px;">
-    <button class="btn-icon" onclick="applySafetyFilter()">
-      <i class="fas fa-filter"></i> Apply
+<!-- Enhanced Filter Section -->
+<div class="filter-container">
+  <div class="filter-header">
+    <div class="filter-title">
+      <i class="fas fa-filter"></i>
+      <span>Data Filter</span>
+    </div>
+    <button class="btn-reset" onclick="resetFilters()" title="Reset to default">
+      <i class="fas fa-redo"></i> Reset
     </button>
+  </div>
+
+  <div class="filter-body">
+    <!-- Quick Select Presets -->
+    <div class="filter-section">
+      <label class="filter-label">Quick Select</label>
+      <div class="preset-buttons">
+        <button class="preset-btn active" data-hours="1" onclick="selectPreset(1)">
+          <i class="fas fa-clock"></i> Last Hour
+        </button>
+        <button class="preset-btn" data-hours="3" onclick="selectPreset(3)">
+          <i class="fas fa-clock"></i> 3 Hours
+        </button>
+        <button class="preset-btn" data-hours="5" onclick="selectPreset(5)">
+          <i class="fas fa-clock"></i> 5 Hours
+        </button>
+        <button class="preset-btn" data-hours="24" onclick="selectPreset(24)">
+          <i class="fas fa-calendar-day"></i> 24 Hours
+        </button>
+        <button class="preset-btn" data-hours="168" onclick="selectPreset(168)">
+          <i class="fas fa-calendar-week"></i> 7 Days
+        </button>
+        <button class="preset-btn" data-custom="true" onclick="toggleCustomRange()">
+          <i class="fas fa-calendar-alt"></i> Custom Range
+        </button>
+      </div>
+    </div>
+
+    <!-- Custom Date Range (Hidden by default) -->
+    <div class="filter-section custom-range-section" id="customRangeSection" style="display: none">
+      <label class="filter-label">Custom Date Range</label>
+      <div class="date-range-inputs">
+        <div class="date-input-group">
+          <label class="input-label"> <i class="fas fa-calendar-check"></i> Start Date & Time </label>
+          <input type="datetime-local" id="safetyStart" class="date-input" />
+        </div>
+        <div class="date-range-separator">
+          <i class="fas fa-arrow-right"></i>
+        </div>
+        <div class="date-input-group">
+          <label class="input-label"> <i class="fas fa-calendar-check"></i> End Date & Time </label>
+          <input type="datetime-local" id="safetyEnd" class="date-input" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Apply Button -->
+    <div class="filter-actions">
+      <button class="btn-apply" onclick="applySafetyFilter()"><i class="fas fa-check-circle"></i> Apply Filter</button>
+      <div class="filter-info" id="filterInfo">
+        <i class="fas fa-info-circle"></i>
+        <span id="filterStatusText">Showing: Last 1 hour</span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -116,7 +157,7 @@
 <!-- Map Section -->
 <div class="map-section">
   <div class="map-header">
-    <div class="map-title"><i class="fas fa-map-marked-alt"></i> Fleet Real-Time Tracking</div>
+    <div class="map-title"><i class="fas fa-map-marked-alt"></i> Fleet Summary</div>
     <div class="map-legend">
       <div class="legend-item">
         <span class="legend-dot moving"></span>
@@ -157,10 +198,9 @@
 <!-- Fleet Table Section -->
 <div class="fleet-table-section">
   <div class="table-header">
-    <div class="table-title"><i class="fas fa-table"></i> Fleet Details</div>
+    <div class="table-title"><i class="fas fa-table"></i> Fleet Summary</div>
     <div class="table-actions">
       <button class="btn-icon" onclick="refreshData()"><i class="fas fa-sync-alt"></i> Refresh</button>
-      <button class="btn-icon" onclick="exportToExcel()"><i class="fas fa-file-excel"></i> Export</button>
     </div>
   </div>
   <div class="table-responsive">
@@ -168,26 +208,23 @@
       <thead>
         <tr>
           <th>Vehicle</th>
-          <th>Status</th>
-          <th>Speed (km/h)</th>
-          <th>Heading</th>
-          <th>Mileage (km)</th>
-          <th>Location</th>
+          <th>Avg Speed</th>
+          <th>Distance Traveled</th>
           <th>GPS Quality</th>
-          <th>Last Update</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody id="fleetTableBody">
         <tr>
-          <td colspan="9" style="text-align: center; padding: 40px">
-            <i class="fas fa-spinner fa-spin"></i> Loading fleet data...
+          <td colspan="5" style="text-align: center; padding: 40px">
+            <i class="fas fa-spinner fa-spin"></i> Loading summary...
           </td>
         </tr>
       </tbody>
     </table>
   </div>
 </div>
+
 
 <script src="https://maps.googleapis.com/maps/api/js?key=<%= googleMapsApiKey %>&callback=initMap" async defer></script>
 <script src="/js/dashboard.js"></script>
