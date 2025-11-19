@@ -19,18 +19,23 @@ const adasSchema = new mongoose.Schema(
         relative_path: String,
       },
     ],
+    validation_status: {
+      type: String,
+      enum: ["correct", "incorrect", "pending"],
+      default: "pending",
+    },
+    validated_by: String,
+    validated_at: Date,
   },
   {
     timestamps: true,
   }
 );
 
-// Unique identifier dari API sebagai primary key
 adasSchema.index({ alarm_key: 1 }, { unique: true, sparse: true });
-
-// Index untuk query berdasarkan waktu dan kendaraan
 adasSchema.index({ event_time: -1 });
 adasSchema.index({ vehicle_name: 1 });
 adasSchema.index({ vehicle_name: 1, event_time: -1 });
+adasSchema.index({ validation_status: 1 });
 
 module.exports = mongoose.model("ADAS", adasSchema);

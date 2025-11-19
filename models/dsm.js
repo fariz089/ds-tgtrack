@@ -19,18 +19,23 @@ const dsmSchema = new mongoose.Schema(
         relative_path: String,
       },
     ],
+    validation_status: {
+      type: String,
+      enum: ["correct", "incorrect", "pending"],
+      default: "pending",
+    },
+    validated_by: String,
+    validated_at: Date,
   },
   {
     timestamps: true,
   }
 );
 
-// Unique identifier dari API sebagai primary key
 dsmSchema.index({ alarm_key: 1 }, { unique: true, sparse: true });
-
-// Index untuk query berdasarkan waktu dan kendaraan
 dsmSchema.index({ event_time: -1 });
 dsmSchema.index({ vehicle_name: 1 });
 dsmSchema.index({ vehicle_name: 1, event_time: -1 });
+dsmSchema.index({ validation_status: 1 });
 
 module.exports = mongoose.model("DSM", dsmSchema);
