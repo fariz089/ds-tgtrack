@@ -59,22 +59,6 @@
     <div class="main-content">
       <div class="topbar">
         <div class="topbar-title"><%= title %></div>
-        <div class="filter-group">
-          <label>Vehicle:</label>
-          <select id="vehicleSelect" class="form-select-sm" onchange="filterByVehicle()" style="width: 200px">
-            <option value="all">All Vehicles</option>
-            <% if (typeof vehicles !== 'undefined' && vehicles.length > 0) { %> <% vehicles.forEach(vehicle => { %>
-            <option value="<%= vehicle %>"><%= vehicle %></option>
-            <% }); %> <% } %>
-          </select>
-          <label>Week:</label>
-          <select class="form-select-sm" style="width: 150px">
-            <option>Week 46 (2025)</option>
-            <option>Week 45 (2025)</option>
-            <option>Week 44 (2025)</option>
-          </select>
-          <button class="btn btn-primary btn-sm" onclick="loadData()"><i class="fas fa-sync-alt"></i> Refresh</button>
-        </div>
       </div>
 
       <div class="content"><%- body %></div>
