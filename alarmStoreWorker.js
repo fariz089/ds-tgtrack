@@ -8,7 +8,7 @@ class AlarmStoreWorker {
     this.axios = axiosInstance;
     this.token = token;
     this.organizeId = organizeId;
-    this.maxConcurrent = maxConcurrent; // ✅ Max 100 alarm parallel
+    this.maxConcurrent = maxConcurrent;
     this.processing = new Map();
     this.queue = [];
   }
@@ -52,14 +52,9 @@ class AlarmStoreWorker {
   }
 
   async processQueue() {
-    // Process alarm dari queue selama ada slot available
     while (this.queue.length > 0 && this.processing.size < this.maxConcurrent) {
       const item = this.queue.shift();
-
-      // Process alarm (non-blocking)
       this.processAlarm(item.alarm, item.category, item.alarmKey, item.queuedAt);
-
-      // Small delay (50ms) biar gak overwhelm API
       await sleep(50);
     }
   }
@@ -77,7 +72,10 @@ class AlarmStoreWorker {
     try {
       const files = await fetchAlarmFiles(this.axios, this.token, this.organizeId, alarmKey, 5, 120000);
 
+      const imei = alarm.device_id || alarm.imei || null;
+
       const baseDoc = {
+        imei: imei,
         vehicle_name: alarm.vehicle_name,
         lpn: alarm.lpn,
         alarm_type: alarmType,
@@ -102,7 +100,7 @@ class AlarmStoreWorker {
       const processingTime = ((Date.now() - startTime) / 1000).toFixed(1);
 
       console.log(
-        `✅ ${category} ${alarm.vehicle_name} @ ${speed} km/h - ${files.length} files (${processingTime}s) | Active: ${this.processing.size}/${this.maxConcurrent}`
+        `✅ ${category} ${alarm.vehicle_name} (IMEI: ${imei}) @ ${speed} km/h - ${files.length} files (${processingTime}s) | Active: ${this.processing.size}/${this.maxConcurrent}`
       );
     } catch (err) {
       if (err.code === 11000) {
@@ -113,7 +111,6 @@ class AlarmStoreWorker {
     } finally {
       this.processing.delete(alarmKey);
 
-      // Process next dari queue
       if (this.queue.length > 0 && this.processing.size < this.maxConcurrent) {
         this.processQueue();
       }
@@ -125,7 +122,7 @@ class AlarmStoreWorker {
       queue: this.queue.length,
       processing: this.processing.size,
       maxConcurrent: this.maxConcurrent,
-      processingKeys: Array.from(this.processing.keys()).slice(0, 5), // First 5 keys
+      processingKeys: Array.from(this.processing.keys()).slice(0, 5),
     };
   }
 
