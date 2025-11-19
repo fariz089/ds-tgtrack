@@ -68,7 +68,7 @@ class AlarmStoreWorker {
     this.processing.set(alarmKey, Date.now());
 
     const alarmType = getAlarmTypeName(alarm.platform_alarm_id);
-    const speed = alarm.additional?.location?.speed || 0;
+    const speed = alarm.additional?.speed || 0;
     const startTime = Date.now();
     const waitTime = ((startTime - queuedAt) / 1000).toFixed(1);
 

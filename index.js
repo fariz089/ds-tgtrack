@@ -222,6 +222,148 @@ app.get("/api/dsm", async (req, res) => {
   }
 });
 
+// API: Get ADAS data for DataTables (server-side processing)
+app.get("/api/adas/datatable", async (req, res) => {
+  try {
+    const { draw, start, length, search, order, columns, vehicle, hours, startDate, endDate } = req.query;
+
+    // Build base query
+    let query = {};
+
+    // Filter by vehicle
+    if (vehicle && vehicle !== "all") {
+      query.vehicle_name = new RegExp(vehicle, "i");
+    }
+
+    // Filter by date range
+    let startTime, endTime;
+    if (startDate && endDate) {
+      startTime = new Date(startDate);
+      endTime = new Date(endDate);
+    } else if (hours) {
+      const h = parseInt(hours) || 24;
+      endTime = new Date();
+      startTime = new Date(endTime.getTime() - h * 60 * 60 * 1000);
+    }
+
+    if (startTime && endTime) {
+      query.event_time = {
+        $gte: startTime,
+        $lte: endTime,
+      };
+    }
+
+    // Search filter
+    if (search && search.value) {
+      query.$or = [
+        { vehicle_name: new RegExp(search.value, "i") },
+        { lpn: new RegExp(search.value, "i") },
+        { alarm_type: new RegExp(search.value, "i") },
+      ];
+    }
+
+    // Count total & filtered
+    const recordsTotal = await ADAS.countDocuments({});
+    const recordsFiltered = await ADAS.countDocuments(query);
+
+    // Sort (default: event_time descending)
+    let sort = { event_time: -1 };
+    if (order && order[0]) {
+      const orderColumn = columns[order[0].column].data;
+      const orderDir = order[0].dir === "asc" ? 1 : -1;
+      sort = { [orderColumn]: orderDir };
+    }
+
+    // Fetch data with pagination
+    const data = await ADAS.find(query)
+      .sort(sort)
+      .skip(parseInt(start) || 0)
+      .limit(parseInt(length) || 25)
+      .lean();
+
+    res.json({
+      draw: parseInt(draw),
+      recordsTotal,
+      recordsFiltered,
+      data,
+    });
+  } catch (err) {
+    console.error("Error fetching ADAS datatable:", err);
+    res.status(500).json({ error: "Failed to fetch data" });
+  }
+});
+
+// API: Get DSM data for DataTables (server-side processing)
+app.get("/api/dsm/datatable", async (req, res) => {
+  try {
+    const { draw, start, length, search, order, columns, vehicle, hours, startDate, endDate } = req.query;
+
+    // Build base query
+    let query = {};
+
+    // Filter by vehicle
+    if (vehicle && vehicle !== "all") {
+      query.vehicle_name = new RegExp(vehicle, "i");
+    }
+
+    // Filter by date range
+    let startTime, endTime;
+    if (startDate && endDate) {
+      startTime = new Date(startDate);
+      endTime = new Date(endDate);
+    } else if (hours) {
+      const h = parseInt(hours) || 24;
+      endTime = new Date();
+      startTime = new Date(endTime.getTime() - h * 60 * 60 * 1000);
+    }
+
+    if (startTime && endTime) {
+      query.event_time = {
+        $gte: startTime,
+        $lte: endTime,
+      };
+    }
+
+    // Search filter
+    if (search && search.value) {
+      query.$or = [
+        { vehicle_name: new RegExp(search.value, "i") },
+        { lpn: new RegExp(search.value, "i") },
+        { alarm_type: new RegExp(search.value, "i") },
+      ];
+    }
+
+    // Count total & filtered
+    const recordsTotal = await DSM.countDocuments({});
+    const recordsFiltered = await DSM.countDocuments(query);
+
+    // Sort (default: event_time descending)
+    let sort = { event_time: -1 };
+    if (order && order[0]) {
+      const orderColumn = columns[order[0].column].data;
+      const orderDir = order[0].dir === "asc" ? 1 : -1;
+      sort = { [orderColumn]: orderDir };
+    }
+
+    // Fetch data with pagination
+    const data = await DSM.find(query)
+      .sort(sort)
+      .skip(parseInt(start) || 0)
+      .limit(parseInt(length) || 25)
+      .lean();
+
+    res.json({
+      draw: parseInt(draw),
+      recordsTotal,
+      recordsFiltered,
+      data,
+    });
+  } catch (err) {
+    console.error("Error fetching DSM datatable:", err);
+    res.status(500).json({ error: "Failed to fetch data" });
+  }
+});
+
 // API: Get aggregated fleet statistics
 app.get("/api/fleet-stats", async (req, res) => {
   try {
@@ -683,7 +825,7 @@ async function main() {
 
     // Initialize workers
     globalQueue = new AlarmFileQueue(axios, token, organizeId, whatsappService, 5, 300000);
-    const alarmStoreWorker = new AlarmStoreWorker(axios, token, organizeId, 100);
+    const alarmStoreWorker = new AlarmStoreWorker(axios, token, organizeId, 1000);
 
     // Initialize and start coordinate worker
     coordinateWorker = new CoordinateWorker(axios, token, organizeId);
