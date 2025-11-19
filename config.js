@@ -58,5 +58,5 @@ module.exports = {
     apiKey: process.env.GOOGLE_MAPS_API_KEY || "YOUR_API_KEY_HERE",
   },
 
-  oneWeekHistory: process.env.ONE_WEEK_HISTORY,
+  getHistory: process.env.GET_HISTORY,
 };
