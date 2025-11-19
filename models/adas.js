@@ -1,7 +1,9 @@
+// models/adas.js
 const mongoose = require("mongoose");
 
 const adasSchema = new mongoose.Schema(
   {
+    imei: String, // ✅ IMEI field
     vehicle_name: String,
     lpn: String,
     alarm_type: String,
@@ -35,6 +37,8 @@ const adasSchema = new mongoose.Schema(
 adasSchema.index({ alarm_key: 1 }, { unique: true, sparse: true });
 adasSchema.index({ event_time: -1 });
 adasSchema.index({ vehicle_name: 1 });
+adasSchema.index({ imei: 1 }); 
+adasSchema.index({ imei: 1, event_time: -1 }); 
 adasSchema.index({ vehicle_name: 1, event_time: -1 });
 adasSchema.index({ validation_status: 1 });
 

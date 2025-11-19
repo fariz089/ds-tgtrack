@@ -1,7 +1,9 @@
+// models/dsm.js
 const mongoose = require("mongoose");
 
 const dsmSchema = new mongoose.Schema(
   {
+    imei: String, // ✅ IMEI field
     vehicle_name: String,
     lpn: String,
     alarm_type: String,
@@ -35,6 +37,8 @@ const dsmSchema = new mongoose.Schema(
 dsmSchema.index({ alarm_key: 1 }, { unique: true, sparse: true });
 dsmSchema.index({ event_time: -1 });
 dsmSchema.index({ vehicle_name: 1 });
+dsmSchema.index({ imei: 1 });
+dsmSchema.index({ imei: 1, event_time: -1 }); 
 dsmSchema.index({ vehicle_name: 1, event_time: -1 });
 dsmSchema.index({ validation_status: 1 });
 
