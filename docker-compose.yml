@@ -1,23 +1,33 @@
 version: "3.8"
 
 services:
+  # Main Application
   ds-tgtrack:
     build: .
+    container_name: ds-tgtrack-app
     ports:
-      - "8080:8080"
-      - "3000:3000"
+      - "3000:3000"  # Internal only, exposed via Cloudflare
     volumes:
       - ./public:/app/public
       - ./models:/app/models
+      - ./views:/app/views
+      - ./chrome-session:/app/chrome-session
     env_file:
       - .env.production
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
     security_opt:
       - seccomp=unconfined
     cap_add:
       - SYS_ADMIN
+    restart: unless-stopped
     depends_on:
       - mongo
+    networks:
+      - app-network
 
+  # MongoDB Database
   mongo:
     image: mongo:latest
     container_name: mongo-db
@@ -28,6 +38,26 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD: example
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # Cloudflare Tunnel
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflare-tunnel
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=eyJhIjoiZjdhOTg5MDE4MGQ1ZGY5ZWM4OWRjZmFiMzRjYTUwNjkiLCJ0IjoiYTE4NWYwNGUtZWU2Ni00Y2UyLWFjYjItOTYwMzk2Yzg3MDE1IiwicyI6IlkyWTROMkV4T1dZdE9UUmxOQzAwTldZMExXSmtNVEF0TTJZMk1qWm1PRGs0WTJJMCJ9
+    restart: unless-stopped
+    depends_on:
+      - ds-tgtrack
+    networks:
+      - app-network
 
 volumes:
   mongo-db:
+
+networks:
+  app-network:
+    driver: bridge
