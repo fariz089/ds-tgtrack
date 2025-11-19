@@ -8,6 +8,7 @@ const config = require("./config");
 const LoginManager = require("./login");
 const AlarmFileQueue = require("./queue");
 const WhatsAppService = require("./whatsapp");
+const VideoStreamService = require("./videoStreamService");
 const { sleep, isLoggedIn, interceptAuthData } = require("./utils");
 const mongoose = require("mongoose");
 
@@ -35,6 +36,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const safetyScoreService = new SafetyScoreService();
+const videoStreamService = new VideoStreamService();
 
 // Helper to get vehicles from database with fallback
 async function getVehiclesList() {
@@ -713,6 +715,120 @@ app.get("/api/alarms/by-vehicle/:vehicleName", async (req, res) => {
   }
 });
 
+// API: Get video stream URL
+app.get("/api/video/stream-url/:imei/:channel", (req, res) => {
+  try {
+    const { imei, channel } = req.params;
+    const url = videoStreamService.getStreamUrl(imei, parseInt(channel));
+
+    res.json({
+      imei,
+      channel: parseInt(channel),
+      url,
+      note: "Stream on-demand",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Check stream availability
+app.get("/api/video/check/:imei/:channel", async (req, res) => {
+  try {
+    const { imei, channel } = req.params;
+    const available = await videoStreamService.checkAvailability(imei, parseInt(channel));
+
+    res.json({
+      imei,
+      channel: parseInt(channel),
+      available,
+      url: videoStreamService.getStreamUrl(imei, parseInt(channel)),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Fetch video snapshot
+app.get("/api/video/snapshot/:imei/:channel", async (req, res) => {
+  try {
+    const { imei, channel } = req.params;
+    const duration = parseInt(req.query.duration) || 5;
+
+    const videoBuffer = await videoStreamService.fetchStream(imei, parseInt(channel), duration);
+
+    res.set({
+      "Content-Type": "video/x-flv",
+      "Content-Length": videoBuffer.length,
+      "Content-Disposition": `inline; filename="${imei}_camera${channel}.flv"`,
+      "Cache-Control": "no-cache",
+      "Access-Control-Allow-Origin": "*",
+    });
+
+    res.send(videoBuffer);
+  } catch (err) {
+    console.error("Error in snapshot endpoint:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Get all cameras
+app.get("/api/video/cameras/:imei", async (req, res) => {
+  try {
+    const { imei } = req.params;
+    const quick = req.query.quick === "true";
+
+    if (quick) {
+      // Quick mode: just return URLs
+      const cameras = videoStreamService.getCameraList(imei);
+      res.json({
+        imei,
+        cameras,
+        mode: "quick",
+      });
+    } else {
+      // Full check mode
+      const cameras = await videoStreamService.checkAllCameras(imei);
+      const availableCount = cameras.filter((c) => c.available).length;
+
+      res.json({
+        imei,
+        cameras,
+        available_count: availableCount,
+        mode: "full",
+      });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Stream video
+app.get("/api/video/stream/:imei/:channel", async (req, res) => {
+  try {
+    const { imei, channel } = req.params;
+    const duration = parseInt(req.query.duration) || 30;
+
+    res.set({
+      "Content-Type": "video/x-flv",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+    });
+
+    const videoBuffer = await videoStreamService.fetchStream(imei, parseInt(channel), duration);
+    res.send(videoBuffer);
+  } catch (err) {
+    console.error("Error streaming video:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Get video service status
+app.get("/api/video/status", (req, res) => {
+  res.json(videoStreamService.getStatus());
+});
+
 // Connect to MongoDB
 mongoose
   .connect(config.mongo, {
@@ -783,6 +899,7 @@ async function main() {
     console.log("launching browser dengan persistent session...");
     browser = await puppeteer.launch(config.browser);
     page = await browser.newPage();
+    videoStreamService.setBrowser(browser);
 
     await page.setRequestInterception(true);
     page.on("request", (request) => {
@@ -967,6 +1084,10 @@ async function main() {
     console.error("✗ Fatal Error:", error.message);
     console.error(error.stack);
   } finally {
+    if (videoStreamService) {
+      await videoStreamService.close();
+    }
+    
     // Stop coordinate worker saat shutdown
     if (coordinateWorker) {
       coordinateWorker.stop();
