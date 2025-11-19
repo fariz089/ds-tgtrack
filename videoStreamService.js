@@ -1,16 +1,27 @@
-// videoStreamService.js
+const axios = require("axios");
+
 class VideoStreamService {
   constructor() {
     this.videoPage = null;
     this.browser = null;
     this.isInitialized = false;
+    this.token = null;
+    this.organizeId = null;
   }
 
   /**
-   * Set browser instance dari main app
+   * Set browser instance dan auth dari main app
    */
   setBrowser(browser) {
     this.browser = browser;
+  }
+
+  /**
+   * Set token dan organizeId untuk API calls
+   */
+  setAuth(token, organizeId) {
+    this.token = token;
+    this.organizeId = organizeId;
   }
 
   /**
@@ -33,7 +44,6 @@ class VideoStreamService {
         Referer: "https://ds.tgtrack.com/",
       });
 
-      // Navigate to ds.tgtrack.com untuk set proper Referer
       await this.videoPage.goto("https://ds.tgtrack.com/", {
         waitUntil: "networkidle2",
         timeout: 30000,
@@ -47,30 +57,78 @@ class VideoStreamService {
   }
 
   /**
-   * Get video stream URL
+   * Get stream URL dari Gateway API
    * @param {string} imei - Device IMEI
    * @param {number} channel - Camera channel (1-8)
-   * @returns {string} Stream URL
+   * @returns {Promise<Object>} Stream info (http, m3u8, rtmp, ws)
    */
-  getStreamUrl(imei, channel = 1) {
-    return `https://tripsdd.com:9089/mdvr/live/${imei}_${channel}.flv`;
+  async getStreamInfo(imei, channel = 1) {
+    try {
+      if (!this.token || !this.organizeId) {
+        throw new Error("Token or OrganizeId not set");
+      }
+
+      console.log(`🔍 Getting stream info for ${imei} channel ${channel}...`);
+
+      const response = await axios.post(
+        "https://ds.tgtrack.com/api/gateway/live/play",
+        {
+          zone: "",
+          imei: imei,
+          chn: channel,
+          video_data_type: 0,
+          stream: 1,
+          protocol: "jtt1078",
+        },
+        {
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            "Accept-Language": "en",
+            Authorization: `Bearer ${this.token}`,
+            "Content-Type": "application/json;charset=UTF-8",
+            OrganizeId: this.organizeId,
+            Origin: "https://ds.tgtrack.com",
+            Referer: "https://ds.tgtrack.com/",
+            TimeZone: "+07:00",
+            "X-Api-Version": "1.0.4",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          },
+          timeout: 10000,
+        }
+      );
+
+      if (response.data.code === 0 && response.data.result?.data) {
+        const data = response.data.result.data;
+        console.log(`✅ Stream info: ${data.http}`);
+        return {
+          stream_id: data.stream_id,
+          http: data.http,
+          m3u8: data.m3u8,
+          rtmp: data.rtmp,
+          ws: data.ws,
+          is_present: data.is_present,
+        };
+      } else {
+        throw new Error(`API error: ${response.data.msg || "Unknown error"}`);
+      }
+    } catch (err) {
+      console.error(`❌ Error getting stream info: ${err.message}`);
+      throw err;
+    }
   }
 
   /**
-   * Fetch video stream using Puppeteer (on-demand)
-   * @param {string} imei - Device IMEI
-   * @param {number} channel - Camera channel (1-8)
+   * Fetch video stream using Puppeteer
+   * @param {string} streamUrl - Stream URL from API
    * @param {number} durationSeconds - Duration in seconds
    * @returns {Promise<Buffer>} Video buffer
    */
-  async fetchStream(imei, channel = 1, durationSeconds = 5) {
+  async fetchStream(streamUrl, durationSeconds = 5) {
     try {
       const vPage = await this.initVideoPage();
-      const videoUrl = this.getStreamUrl(imei, channel);
 
-      console.log(`📹 Fetching: ${imei} camera ${channel} (${durationSeconds}s)`);
+      console.log(`📹 Fetching stream: ${streamUrl} (${durationSeconds}s)`);
 
-      // Fetch video using page.evaluate
       const videoBuffer = await vPage.evaluate(
         async (url, duration) => {
           const response = await fetch(url, {
@@ -98,10 +156,8 @@ class VideoStreamService {
             totalBytes += value.length;
           }
 
-          // Cancel remaining stream
           reader.cancel();
 
-          // Combine chunks
           const combined = new Uint8Array(totalBytes);
           let offset = 0;
           for (const chunk of chunks) {
@@ -111,28 +167,25 @@ class VideoStreamService {
 
           return Array.from(combined);
         },
-        videoUrl,
+        streamUrl,
         durationSeconds
       );
 
       console.log(`✅ Fetched ${(videoBuffer.length / 1024).toFixed(2)} KB`);
       return Buffer.from(videoBuffer);
     } catch (err) {
-      console.error(`❌ Error fetching video: ${err.message}`);
+      console.error(`❌ Error fetching stream: ${err.message}`);
       throw err;
     }
   }
 
   /**
    * Check if video stream is available
-   * @param {string} imei - Device IMEI
-   * @param {number} channel - Camera channel (1-8)
-   * @returns {Promise<boolean>}
    */
   async checkAvailability(imei, channel = 1) {
     try {
-      const buffer = await this.fetchStream(imei, channel, 1);
-      return buffer.length > 1000; // At least 1KB
+      const streamInfo = await this.getStreamInfo(imei, channel);
+      return streamInfo.is_present;
     } catch (err) {
       console.error(`Camera ${channel} not available: ${err.message}`);
       return false;
@@ -141,38 +194,34 @@ class VideoStreamService {
 
   /**
    * Get all camera URLs (1-8) without checking availability
-   * @param {string} imei - Device IMEI
-   * @returns {Array} Array of camera info
    */
   getCameraList(imei) {
     return Array.from({ length: 8 }, (_, i) => ({
       channel: i + 1,
-      url: this.getStreamUrl(imei, i + 1),
+      imei: imei,
       available: null, // Unknown until checked
     }));
   }
 
   /**
    * Check availability for all cameras (1-8)
-   * @param {string} imei - Device IMEI
-   * @returns {Promise<Array>} Array of camera info with availability
    */
   async checkAllCameras(imei) {
     console.log(`🔍 Checking all cameras for ${imei}...`);
 
     const checks = Array.from({ length: 8 }, (_, i) => i + 1).map(async (channel) => {
       try {
-        const available = await this.checkAvailability(imei, channel);
+        const streamInfo = await this.getStreamInfo(imei, channel);
         return {
           channel,
-          available,
-          url: this.getStreamUrl(imei, channel),
+          available: streamInfo.is_present,
+          http: streamInfo.http,
+          m3u8: streamInfo.m3u8,
         };
       } catch (err) {
         return {
           channel,
           available: false,
-          url: this.getStreamUrl(imei, channel),
           error: err.message,
         };
       }
@@ -186,9 +235,6 @@ class VideoStreamService {
     return results;
   }
 
-  /**
-   * Close video page
-   */
   async close() {
     if (this.videoPage) {
       await this.videoPage.close();
@@ -198,14 +244,12 @@ class VideoStreamService {
     }
   }
 
-  /**
-   * Get service status
-   */
   getStatus() {
     return {
       initialized: this.isInitialized,
       hasPage: !!this.videoPage,
       hasBrowser: !!this.browser,
+      hasAuth: !!(this.token && this.organizeId),
     };
   }
 }

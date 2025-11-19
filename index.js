@@ -12,7 +12,7 @@ const VideoStreamService = require("./videoStreamService");
 const { sleep, isLoggedIn, interceptAuthData } = require("./utils");
 const mongoose = require("mongoose");
 
-const { initWebSocketServer, broadcastToCopilot, broadcastGPSUpdate, broadcastDestination } = require("./ws-server");
+const { initWebSocketServer } = require("./ws-server");
 
 const app = express();
 
@@ -76,6 +76,28 @@ app.get("/", async (req, res) => {
       title: "Fleet Dashboard",
       vehicles: [],
       currentPage: "dashboard",
+      googleMapsApiKey: config.googleMaps.apiKey,
+    });
+  }
+});
+
+// Command Center page
+app.get("/command-center", async (req, res) => {
+  try {
+    const vehicles = await getVehiclesList();
+
+    res.render("command-center", {
+      title: "Command Center",
+      vehicles: vehicles,
+      currentPage: "command-center",
+      googleMapsApiKey: config.googleMaps.apiKey,
+    });
+  } catch (err) {
+    console.error("Error rendering Command Center:", err);
+    res.render("command-center", {
+      title: "Command Center",
+      vehicles: [],
+      currentPage: "command-center",
       googleMapsApiKey: config.googleMaps.apiKey,
     });
   }
@@ -715,47 +737,70 @@ app.get("/api/alarms/by-vehicle/:vehicleName", async (req, res) => {
   }
 });
 
-// API: Get video stream URL
-app.get("/api/video/stream-url/:imei/:channel", (req, res) => {
+// Middleware: Check video service auth
+function checkVideoAuth(req, res, next) {
+  const status = videoStreamService.getStatus();
+  
+  if (!status.hasAuth) {
+    return res.status(503).json({ 
+      error: 'Video service not ready. Authentication in progress...',
+      status: status
+    });
+  }
+  
+  next();
+}
+
+// API: Get stream URL from Gateway
+app.get("/api/video/stream-url/:imei/:channel", checkVideoAuth, async (req, res) => {
   try {
     const { imei, channel } = req.params;
-    const url = videoStreamService.getStreamUrl(imei, parseInt(channel));
+    const streamInfo = await videoStreamService.getStreamInfo(imei, parseInt(channel));
 
     res.json({
       imei,
       channel: parseInt(channel),
-      url,
-      note: "Stream on-demand",
+      ...streamInfo,
     });
   } catch (err) {
+    console.error("Error getting stream URL:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // API: Check stream availability
-app.get("/api/video/check/:imei/:channel", async (req, res) => {
+app.get("/api/video/check/:imei/:channel", checkVideoAuth, async (req, res) => {
   try {
     const { imei, channel } = req.params;
-    const available = await videoStreamService.checkAvailability(imei, parseInt(channel));
+    const streamInfo = await videoStreamService.getStreamInfo(imei, parseInt(channel));
 
     res.json({
       imei,
       channel: parseInt(channel),
-      available,
-      url: videoStreamService.getStreamUrl(imei, parseInt(channel)),
+      available: streamInfo.is_present,
+      ...streamInfo,
     });
   } catch (err) {
+    console.error("Error checking stream:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // API: Fetch video snapshot
-app.get("/api/video/snapshot/:imei/:channel", async (req, res) => {
+app.get("/api/video/snapshot/:imei/:channel", checkVideoAuth, async (req, res) => {
   try {
     const { imei, channel } = req.params;
     const duration = parseInt(req.query.duration) || 5;
 
-    const videoBuffer = await videoStreamService.fetchStream(imei, parseInt(channel), duration);
+    // Get stream URL from Gateway
+    const streamInfo = await videoStreamService.getStreamInfo(imei, parseInt(channel));
+
+    if (!streamInfo.is_present) {
+      return res.status(404).json({ error: "Stream not available" });
+    }
+
+    // Fetch video buffer
+    const videoBuffer = await videoStreamService.fetchStream(streamInfo.http, duration);
 
     res.set({
       "Content-Type": "video/x-flv",
@@ -772,14 +817,74 @@ app.get("/api/video/snapshot/:imei/:channel", async (req, res) => {
   }
 });
 
+// API: Stream video (live proxy)
+app.get("/api/video/stream/:imei/:channel", checkVideoAuth, async (req, res) => {
+  try {
+    const { imei, channel } = req.params;
+
+    // Get stream URL from Gateway API
+    const streamInfo = await videoStreamService.getStreamInfo(imei, parseInt(channel));
+
+    if (!streamInfo.is_present) {
+      return res.status(404).json({ error: "Stream not available" });
+    }
+
+    console.log(`▶️ Proxying stream: ${streamInfo.http}`);
+
+    // Proxy stream
+    const https = require("https");
+    const axios = require("axios");
+    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+    const response = await axios({
+      method: "GET",
+      url: streamInfo.http,
+      responseType: "stream",
+      httpsAgent: httpsAgent,
+      headers: {
+        Accept: "*/*",
+        Origin: "https://ds.tgtrack.com",
+        Referer: "https://ds.tgtrack.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      },
+      timeout: 60000,
+    });
+
+    res.set({
+      "Content-Type": "video/x-flv",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      Connection: "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+      "Transfer-Encoding": "chunked",
+    });
+
+    response.data.pipe(res);
+
+    response.data.on("error", (err) => {
+      console.error("Stream error:", err);
+      if (!res.headersSent) res.status(500).end();
+    });
+
+    req.on("close", () => {
+      console.log("Client disconnected");
+      response.data.destroy();
+    });
+  } catch (err) {
+    console.error("Error streaming video:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+});
+
 // API: Get all cameras
-app.get("/api/video/cameras/:imei", async (req, res) => {
+app.get("/api/video/cameras/:imei", checkVideoAuth, async (req, res) => {
   try {
     const { imei } = req.params;
     const quick = req.query.quick === "true";
 
     if (quick) {
-      // Quick mode: just return URLs
+      // Quick mode: just return camera list
       const cameras = videoStreamService.getCameraList(imei);
       res.json({
         imei,
@@ -787,7 +892,7 @@ app.get("/api/video/cameras/:imei", async (req, res) => {
         mode: "quick",
       });
     } else {
-      // Full check mode
+      // Full check mode: check availability from Gateway
       const cameras = await videoStreamService.checkAllCameras(imei);
       const availableCount = cameras.filter((c) => c.available).length;
 
@@ -799,34 +904,229 @@ app.get("/api/video/cameras/:imei", async (req, res) => {
       });
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// API: Stream video
-app.get("/api/video/stream/:imei/:channel", async (req, res) => {
-  try {
-    const { imei, channel } = req.params;
-    const duration = parseInt(req.query.duration) || 30;
-
-    res.set({
-      "Content-Type": "video/x-flv",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "Access-Control-Allow-Origin": "*",
-    });
-
-    const videoBuffer = await videoStreamService.fetchStream(imei, parseInt(channel), duration);
-    res.send(videoBuffer);
-  } catch (err) {
-    console.error("Error streaming video:", err);
+    console.error("Error checking cameras:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // API: Get video service status
-app.get("/api/video/status", (req, res) => {
+app.get("/api/video/status", checkVideoAuth, (req, res) => {
   res.json(videoStreamService.getStatus());
+});
+
+// API: Get vehicle summary for Command Center (36 hours)
+app.get("/api/command-center/vehicles", async (req, res) => {
+  try {
+    const vehicles = await Vehicle.find({ status: "active" }).select("name imei lpn display_name").lean();
+
+    if (vehicles.length === 0) {
+      return res.json([]);
+    }
+
+    const endTime = new Date();
+    const startTime = new Date(endTime.getTime() - 36 * 60 * 60 * 1000);
+
+    const summaries = await Promise.all(
+      vehicles.map(async (vehicle) => {
+        try {
+          const { name, imei, lpn } = vehicle;
+
+          const [adasCount, dsmCount, adasCorrect, dsmCorrect] = await Promise.all([
+            ADAS.countDocuments({
+              imei: imei,
+              event_time: { $gte: startTime, $lte: endTime },
+            }),
+            DSM.countDocuments({
+              imei: imei,
+              event_time: { $gte: startTime, $lte: endTime },
+            }),
+            ADAS.countDocuments({
+              imei: imei,
+              event_time: { $gte: startTime, $lte: endTime },
+              validation_status: { $ne: "incorrect" },
+            }),
+            DSM.countDocuments({
+              imei: imei,
+              event_time: { $gte: startTime, $lte: endTime },
+              validation_status: { $ne: "incorrect" },
+            }),
+          ]);
+
+          const latestCoord = await Coordinate.findOne({ imei: imei }).sort({ event_time: -1 }).lean();
+
+          const totalCorrectAlarms = adasCorrect + dsmCorrect;
+          const score = Math.max(0, 100 - totalCorrectAlarms * 5);
+
+          return {
+            vehicle_name: name,
+            display_name: vehicle.display_name || name,
+            lpn: lpn,
+            alarms: {
+              adas: adasCount,
+              dsm: dsmCount,
+              adas_correct: adasCorrect,
+              dsm_correct: dsmCorrect,
+              total: adasCount + dsmCount,
+              total_correct: totalCorrectAlarms,
+            },
+            safety_score: score,
+            location: latestCoord
+              ? {
+                  lat: latestCoord.lat,
+                  lng: latestCoord.lng,
+                  speed: latestCoord.speed || 0,
+                  event_time: latestCoord.event_time,
+                }
+              : null,
+            imei: imei,
+          };
+        } catch (err) {
+          console.error(`❌ ${vehicle.name}:`, err.message);
+          return {
+            vehicle_name: vehicle.name,
+            display_name: vehicle.display_name || vehicle.name,
+            lpn: vehicle.lpn,
+            alarms: { adas: 0, dsm: 0, adas_correct: 0, dsm_correct: 0, total: 0, total_correct: 0 },
+            safety_score: 100,
+            location: null,
+            imei: vehicle.imei,
+          };
+        }
+      })
+    );
+
+    res.json(summaries);
+  } catch (err) {
+    console.error("❌ Error fetching vehicle summaries:", err);
+    res.status(500).json({ error: err.message, vehicles: [] });
+  }
+});
+
+// API: Get vehicle detail with alarms (for modal)
+app.get("/api/command-center/vehicle/:vehicleName", async (req, res) => {
+  try {
+    const { vehicleName } = req.params;
+    const vehicle = await Vehicle.findOne({ name: vehicleName }).lean();
+
+    if (!vehicle) {
+      return res.status(404).json({ error: "Vehicle not found" });
+    }
+
+    const endTime = new Date();
+    const startTime = new Date(endTime.getTime() - 36 * 60 * 60 * 1000);
+
+    const [adasAlarms, dsmAlarms] = await Promise.all([
+      ADAS.find({
+        imei: vehicle.imei,
+        event_time: { $gte: startTime, $lte: endTime },
+      })
+        .sort({ event_time: -1 })
+        .limit(50)
+        .lean(),
+
+      DSM.find({
+        imei: vehicle.imei,
+        event_time: { $gte: startTime, $lte: endTime },
+      })
+        .sort({ event_time: -1 })
+        .limit(50)
+        .lean(),
+    ]);
+
+    res.json({
+      vehicle_name: vehicleName,
+      imei: vehicle.imei,
+      lpn: vehicle.lpn,
+      alarms: {
+        adas: adasAlarms,
+        dsm: dsmAlarms,
+      },
+    });
+  } catch (err) {
+    console.error("Error fetching vehicle detail:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Validate alarm (mark as correct/incorrect)
+app.post("/api/command-center/validate-alarm", async (req, res) => {
+  try {
+    const { alarm_key, alarm_type, status, validated_by } = req.body;
+
+    if (!["correct", "incorrect"].includes(status)) {
+      return res.status(400).json({ error: "Invalid status" });
+    }
+
+    const Model = alarm_type === "ADAS" ? ADAS : DSM;
+
+    const updated = await Model.findOneAndUpdate(
+      { alarm_key },
+      {
+        validation_status: status,
+        validated_by: validated_by || "system",
+        validated_at: new Date(),
+      },
+      { new: true }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ error: "Alarm not found" });
+    }
+
+    res.json({
+      success: true,
+      alarm_key,
+      validation_status: status,
+      message: `Alarm marked as ${status}`,
+    });
+  } catch (err) {
+    console.error("Error validating alarm:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Get vehicle alarms with location (for map markers)
+app.get("/api/command-center/vehicle-alarms/:vehicleName", async (req, res) => {
+  try {
+    const { vehicleName } = req.params;
+    const vehicle = await Vehicle.findOne({ name: vehicleName }).lean();
+
+    if (!vehicle) {
+      return res.status(404).json({ error: "Vehicle not found" });
+    }
+
+    const endTime = new Date();
+    const startTime = new Date(endTime.getTime() - 36 * 60 * 60 * 1000);
+
+    const [adasAlarms, dsmAlarms] = await Promise.all([
+      ADAS.find({
+        imei: vehicle.imei,
+        event_time: { $gte: startTime, $lte: endTime },
+        lat: { $exists: true, $ne: null },
+        lng: { $exists: true, $ne: null },
+      })
+        .select("alarm_type lat lng event_time validation_status alarm_key")
+        .lean(),
+
+      DSM.find({
+        imei: vehicle.imei,
+        event_time: { $gte: startTime, $lte: endTime },
+        lat: { $exists: true, $ne: null },
+        lng: { $exists: true, $ne: null },
+      })
+        .select("alarm_type lat lng event_time validation_status alarm_key")
+        .lean(),
+    ]);
+
+    res.json({
+      vehicle_name: vehicleName,
+      imei: vehicle.imei,
+      alarms: [...adasAlarms.map((a) => ({ ...a, type: "ADAS" })), ...dsmAlarms.map((a) => ({ ...a, type: "DSM" }))],
+    });
+  } catch (err) {
+    console.error("Error fetching vehicle alarms:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Connect to MongoDB
@@ -899,6 +1199,7 @@ async function main() {
     console.log("launching browser dengan persistent session...");
     browser = await puppeteer.launch(config.browser);
     page = await browser.newPage();
+
     videoStreamService.setBrowser(browser);
 
     await page.setRequestInterception(true);
@@ -937,6 +1238,8 @@ async function main() {
     const authData = await interceptAuthData(page);
     token = authData.token;
     organizeId = authData.organizeId || "61a22a23e0584dac";
+
+    videoStreamService.setAuth(token, organizeId);
 
     console.log("✓ Token dan OrganizeId berhasil diambil\n");
 
@@ -1021,7 +1324,7 @@ async function main() {
     }
 
     let cycleCount = 0;
-    let firstCycle = true;
+    let firstCycle = config.getHistory === "true" || config.getHistory === true;
 
     while (true) {
       cycleCount++;
@@ -1087,7 +1390,7 @@ async function main() {
     if (videoStreamService) {
       await videoStreamService.close();
     }
-    
+
     // Stop coordinate worker saat shutdown
     if (coordinateWorker) {
       coordinateWorker.stop();
