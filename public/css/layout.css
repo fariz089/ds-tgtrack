@@ -127,7 +127,6 @@ body {
 .sidebar-menu {
   padding: 15px 0;
   height: calc(100vh - 120px);
-  overflow-y: auto;
 }
 
 .sidebar.collapsed .sidebar-menu {
