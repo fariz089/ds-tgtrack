@@ -33,7 +33,7 @@ class AlarmFileQueue {
           const alarmTypeName = getAlarmTypeName(alarm.platform_alarm_id);
           const alarmCategory = getAlarmCategory(alarm.platform_alarm_id);
           const alarmIcon = getAlarmIcon(alarm.platform_alarm_id);
-          const speed = alarm.additional?.location?.speed || 0;
+          const speed = alarm.additional?.speed || 0;
 
           this.queue.push({
             alarm,
