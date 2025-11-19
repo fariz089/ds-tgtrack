@@ -1,22 +1,24 @@
 version: "3.8"
 
 services:
-  # Main Application
-  ds-tgtrack:
+  ds-tgtrack-1:
     build: .
-    container_name: ds-tgtrack-app
+    container_name: ds-tgtrack-1
     ports:
-      - "3000:3000"  # Internal only, exposed via Cloudflare
+      - "3000:3000"
     volumes:
       - ./public:/app/public
       - ./models:/app/models
       - ./views:/app/views
       - ./chrome-session:/app/chrome-session
+      - /etc/localtime:/etc/localtime:ro 
+      - /etc/timezone:/etc/timezone:ro   
     env_file:
       - .env.production
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - TZ=Asia/Jakarta 
     security_opt:
       - seccomp=unconfined
     cap_add:
@@ -27,7 +29,6 @@ services:
     networks:
       - app-network
 
-  # MongoDB Database
   mongo:
     image: mongo:latest
     container_name: mongo-db
@@ -35,23 +36,25 @@ services:
       - "27017:27017"
     volumes:
       - mongo-db:/data/db
+      - /etc/localtime:/etc/localtime:ro
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD: example
+      TZ: Asia/Jakarta 
     restart: unless-stopped
     networks:
       - app-network
 
-  # Cloudflare Tunnel
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflare-tunnel
-    command: tunnel run
+    command: tunnel --no-autoupdate run
     environment:
       - TUNNEL_TOKEN=eyJhIjoiZjdhOTg5MDE4MGQ1ZGY5ZWM4OWRjZmFiMzRjYTUwNjkiLCJ0IjoiYTE4NWYwNGUtZWU2Ni00Y2UyLWFjYjItOTYwMzk2Yzg3MDE1IiwicyI6IlkyWTROMkV4T1dZdE9UUmxOQzAwTldZMExXSmtNVEF0TTJZMk1qWm1PRGs0WTJJMCJ9
+      - TZ=Asia/Jakarta 
     restart: unless-stopped
     depends_on:
-      - ds-tgtrack
+      - ds-tgtrack-1
     networks:
       - app-network
 
