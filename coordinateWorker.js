@@ -1,5 +1,7 @@
+// coordinateWorker.js
 const Coordinate = require("./models/coordinate");
 const Vehicle = require("./models/vehicle");
+const { broadcastGPSUpdate } = require("./ws-server");
 
 class CoordinateWorker {
   constructor(axios, token, organizeId) {
@@ -9,7 +11,8 @@ class CoordinateWorker {
     this.lastReceiveTime = Date.now();
     this.isRunning = false;
     this.intervalId = null;
-    this.vehicleMapCache = {}; // Cache untuk performa
+    this.vehicleMapCache = {};
+    this.loggedVehicles = new Set();
   }
 
   async fetchCoordinates() {
@@ -43,6 +46,7 @@ class CoordinateWorker {
 
         if (coordinates.length > 0) {
           await this.saveCoordinates(coordinates);
+          await this.broadcastCoordinates(coordinates);
 
           const maxReceiveTime = Math.max(...coordinates.map((c) => c.receive_time));
           this.lastReceiveTime = maxReceiveTime;
@@ -56,7 +60,6 @@ class CoordinateWorker {
   }
 
   async getVehicleMap() {
-    // Rebuild cache setiap 5 menit
     const now = Date.now();
     if (this.vehicleMapCache.lastUpdate && now - this.vehicleMapCache.lastUpdate < 300000) {
       return this.vehicleMapCache.data;
@@ -90,14 +93,13 @@ class CoordinateWorker {
 
     for (const coord of coordinates) {
       try {
-        // Map IMEI ke vehicle name
         const vehicleInfo = vehicleMap[coord.imei];
         const vehicleName = vehicleInfo?.display_name || vehicleInfo?.name || coord.imei;
 
         const coordData = {
           imei: coord.imei,
           device_key: coord.device_key,
-          vehicle_name: vehicleName, // Nama yang proper dari Vehicle model
+          vehicle_name: vehicleName,
           event_time: new Date(coord.event_time),
           receive_time: new Date(coord.receive_time),
           time_zone: coord.time_zone,
@@ -127,7 +129,6 @@ class CoordinateWorker {
           },
         };
 
-        // Upsert untuk avoid duplicates
         await Coordinate.findOneAndUpdate(
           {
             imei: coord.imei,
@@ -138,9 +139,30 @@ class CoordinateWorker {
         );
       } catch (err) {
         if (err.code !== 11000) {
-          // Ignore duplicate key error
           console.error(`Error saving coordinate for ${coord.imei}:`, err.message);
         }
+      }
+    }
+  }
+
+  async broadcastCoordinates(coordinates) {
+    const vehicleMap = await this.getVehicleMap();
+
+    for (const coord of coordinates) {
+      try {
+        const vehicleInfo = vehicleMap[coord.imei];
+        const vehicleName = vehicleInfo?.display_name || vehicleInfo?.name || coord.imei;
+
+        // Log vehicle mapping once for debugging
+        if (!this.loggedVehicles.has(coord.imei)) {
+          console.log(`📋 Vehicle mapping: ${coord.imei} → ${vehicleName}`);
+          this.loggedVehicles.add(coord.imei);
+        }
+
+        // Broadcast GPS update
+        broadcastGPSUpdate(vehicleName, coord.lat, coord.lng, coord.speed, coord.azimuth, coord.event_time);
+      } catch (err) {
+        console.error(`Error broadcasting GPS for ${coord.imei}:`, err.message);
       }
     }
   }
@@ -154,10 +176,8 @@ class CoordinateWorker {
     console.log("🌍 Starting Coordinate Worker...");
     this.isRunning = true;
 
-    // Fetch immediately
     this.fetchCoordinates();
 
-    // Then fetch every interval
     this.intervalId = setInterval(() => {
       this.fetchCoordinates();
     }, intervalMs);
@@ -168,6 +188,7 @@ class CoordinateWorker {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
+
     this.isRunning = false;
     console.log("🛑 Coordinate Worker stopped");
   }
