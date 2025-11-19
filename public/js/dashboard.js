@@ -1,3 +1,4 @@
+// public/js/dashboard.js
 let map;
 let markers = {};
 let infoWindows = {};
@@ -12,18 +13,54 @@ document.addEventListener("DOMContentLoaded", function () {
   setInterval(loadSafetyScores, 60000);
 });
 
+/**
+ * Bangun query string untuk API safety:
+ * - Kalau start & end terisi -> pakai startDate/endDate
+ * - Kalau tidak terisi -> pakai hours (default 1 jam)
+ */
+function buildSafetyQuery() {
+  const startInput = document.getElementById("safetyStart");
+  const endInput = document.getElementById("safetyEnd");
+  const hoursInput = document.getElementById("safetyHours");
+
+  const params = new URLSearchParams();
+
+  // Mode custom tanggal
+  if (startInput && endInput && startInput.value && endInput.value) {
+    params.append("startDate", startInput.value);
+    params.append("endDate", endInput.value);
+  } else {
+    // Mode last X hours (1, 3, 5, 24, dst.)
+    const hours = hoursInput && hoursInput.value ? hoursInput.value : 1;
+    params.append("hours", hours);
+  }
+
+  return params.toString(); // contoh hasil: "startDate=2025-11-15T00:00&endDate=2025-11-19T23:59"
+}
+
+/**
+ * Dipanggil ketika tombol "Apply" di dashboard ditekan
+ * (lihat tombol di dashboard.ejs yang kita set onclick="applySafetyFilter()")
+ */
+function applySafetyFilter() {
+  loadSafetyScores();
+}
+
+// ✅ Fungsi ini sekarang pakai query dari buildSafetyQuery()
 async function loadSafetyScores() {
   try {
-    // Load fleet score
-    const fleetResponse = await fetch("/api/safety/fleet-score?hours=1");
-    const fleetScore = await fleetResponse.json();
+    const query = buildSafetyQuery();
 
+    // Load fleet score
+    const fleetResponse = await fetch(`/api/safety/fleet-score?${query}`);
+    const fleetScore = await fleetResponse.json();
     updateFleetScore(fleetScore);
 
     // Load risky vehicles
-    const riskyResponse = await fetch("/api/safety/risky-vehicles?hours=1&limit=5");
+    const riskyResponse = await fetch(
+      `/api/safety/risky-vehicles?${query}&limit=5`
+    );
     const riskyVehicles = await riskyResponse.json();
-
     updateRiskyVehicles(riskyVehicles);
   } catch (err) {
     console.error("Error loading safety scores:", err);
@@ -46,14 +83,19 @@ function updateFleetScore(data) {
 
   // Update details
   document.getElementById("fleetTotalAlarms").textContent = data.total_alarms;
-  document.getElementById("fleetCritical").textContent = data.severity_counts.critical;
-  document.getElementById("fleetADAS").textContent = data.category_breakdown.ADAS;
-  document.getElementById("fleetDSM").textContent = data.category_breakdown.DSM;
+  document.getElementById("fleetCritical").textContent =
+    data.severity_counts.critical;
+  document.getElementById("fleetADAS").textContent =
+    data.category_breakdown.ADAS;
+  document.getElementById("fleetDSM").textContent =
+    data.category_breakdown.DSM;
 
   // Update separate cards
   document.getElementById("activeVehicles").textContent = data.total_vehicles;
-  document.getElementById("adasCount").textContent = data.category_breakdown.ADAS;
-  document.getElementById("dsmCount").textContent = data.category_breakdown.DSM;
+  document.getElementById("adasCount").textContent =
+    data.category_breakdown.ADAS;
+  document.getElementById("dsmCount").textContent =
+    data.category_breakdown.DSM;
 }
 
 // Tambahkan onclick di updateRiskyVehicles
@@ -74,8 +116,10 @@ function updateRiskyVehicles(vehicles) {
   container.innerHTML = vehicles
     .map(
       (v, index) => `
-        <div class="risky-vehicle-item" style="border-left-color: ${v.grade.color}; cursor: pointer;" 
-             onclick="showVehicleAlarms('${v.vehicle_name}', 1)">
+        <div class="risky-vehicle-item" style="border-left-color: ${
+          v.grade.color
+        }; cursor: pointer;" 
+             onclick="showVehicleAlarms('${v.vehicle_name}')">
             <div class="risky-vehicle-info">
                 <div class="risky-vehicle-rank" style="color: ${v.grade.color};">
                     ${index + 1}
@@ -96,7 +140,9 @@ function updateRiskyVehicles(vehicles) {
                 <div class="risky-score-value" style="color: ${v.grade.color};">
                     ${v.score}
                 </div>
-                <div class="risky-score-grade" style="background: ${v.grade.color}20; color: ${v.grade.color};">
+                <div class="risky-score-grade" style="background: ${
+                  v.grade.color
+                }20; color: ${v.grade.color};">
                     ${v.grade.letter}
                 </div>
             </div>
@@ -106,10 +152,15 @@ function updateRiskyVehicles(vehicles) {
     .join("");
 }
 
-// Tambahkan fungsi ini di akhir file
-async function showVehicleAlarms(vehicleName, hours) {
+// ✅ Sekarang pakai query dari buildSafetyQuery(), TIDAK lagi mengirim hours=undefined
+async function showVehicleAlarms(vehicleName) {
   try {
-    const response = await fetch(`/api/alarms/by-vehicle/${encodeURIComponent(vehicleName)}?hours=${hours}&limit=20`);
+    const query = buildSafetyQuery(); // bisa berupa startDate/endDate atau hours
+    const response = await fetch(
+      `/api/alarms/by-vehicle/${encodeURIComponent(
+        vehicleName
+      )}?${query}&limit=20`
+    );
     const data = await response.json();
     displayAlarmModal(data);
   } catch (err) {
@@ -157,7 +208,9 @@ function displayAlarmModal(data) {
           <span class="close-modal" onclick="closeAlarmModal()">&times;</span>
         </div>
         <div class="alarm-modal-body">
-          <p class="period-info">Period: ${data.period} | Total: ${data.total} alarms</p>
+          <p class="period-info">Period: ${data.period} | Total: ${
+    data.total
+  } alarms</p>
           <div class="alarm-list">
             ${
               data.alarms.length === 0
@@ -168,21 +221,35 @@ function displayAlarmModal(data) {
               <div class="alarm-item">
                 <div class="alarm-header">
                   <span class="alarm-type">${alarm.alarm_type}</span>
-                  <span class="alarm-time">${new Date(alarm.event_time).toLocaleString("id-ID")}</span>
+                  <span class="alarm-time">${new Date(
+                    alarm.event_time
+                  ).toLocaleString("id-ID")}</span>
                 </div>
                 <div class="alarm-details">
-                  <span><i class="fas fa-tachometer-alt"></i> ${alarm.speed} km/h</span>
-                  <span><i class="fas fa-map-marker-alt"></i> ${alarm.lat?.toFixed(6)}, ${alarm.lng?.toFixed(6)}</span>
+                  <span><i class="fas fa-tachometer-alt"></i> ${
+                    alarm.speed
+                  } km/h</span>
+                  <span><i class="fas fa-map-marker-alt"></i> ${
+                    alarm.lat?.toFixed(6)
+                  }, ${alarm.lng?.toFixed(6)}</span>
                 </div>
                 ${
                   alarm.files && alarm.files.length > 0
                     ? `
                   <div class="alarm-files-section">
-                    <div class="alarm-files-header" onclick="toggleFiles('${alarm._id}')">
-                      <i class="fas fa-paperclip"></i> ${alarm.files.length} file(s) available
-                      <i class="fas fa-chevron-down" id="chevron-${alarm._id}"></i>
+                    <div class="alarm-files-header" onclick="toggleFiles('${
+                      alarm._id
+                    }')">
+                      <i class="fas fa-paperclip"></i> ${
+                        alarm.files.length
+                      } file(s) available
+                      <i class="fas fa-chevron-down" id="chevron-${
+                        alarm._id
+                      }"></i>
                     </div>
-                    <div class="alarm-files-list" id="files-${alarm._id}" style="display: none;">
+                    <div class="alarm-files-list" id="files-${
+                      alarm._id
+                    }" style="display: none;">
                       ${renderFilesList(alarm.files)}
                     </div>
                   </div>
@@ -206,7 +273,8 @@ function renderFilesList(files) {
   // Helper function to determine if file is image
   const isImage = (file) => {
     if (file.file_type === 1) return true;
-    const ext = file.file_name?.toLowerCase() || file.relative_path?.toLowerCase() || "";
+    const ext =
+      file.file_name?.toLowerCase() || file.relative_path?.toLowerCase() || "";
     return (
       ext.endsWith(".jpg") ||
       ext.endsWith(".jpeg") ||
@@ -219,7 +287,8 @@ function renderFilesList(files) {
   // Helper function to determine if file is video
   const isVideo = (file) => {
     if (file.file_type === 2) return true;
-    const ext = file.file_name?.toLowerCase() || file.relative_path?.toLowerCase() || "";
+    const ext =
+      file.file_name?.toLowerCase() || file.relative_path?.toLowerCase() || "";
     return (
       ext.endsWith(".mp4") ||
       ext.endsWith(".avi") ||
@@ -272,8 +341,12 @@ function renderFilesList(files) {
             <div class="file-item">
               <div class="file-info">
                 <i class="fas fa-video"></i>
-                <span class="file-name">${file.file_name || `Video ${idx + 1}`}</span>
-                <span class="file-size">(${formatFileSize(file.file_size)})</span>
+                <span class="file-name">${
+                  file.file_name || `Video ${idx + 1}`
+                }</span>
+                <span class="file-size">(${formatFileSize(
+                  file.file_size
+                )})</span>
               </div>
               <div class="file-actions">
                 <button class="btn-view" onclick="viewFile('${fileUrl}', 2)" title="Play">
@@ -303,8 +376,12 @@ function renderFilesList(files) {
             <div class="file-item">
               <div class="file-info">
                 <i class="fas ${getFileIcon(file.file_type)}"></i>
-                <span class="file-name">${file.file_name || `File ${idx + 1}`}</span>
-                <span class="file-size">(${formatFileSize(file.file_size)})</span>
+                <span class="file-name">${
+                  file.file_name || `File ${idx + 1}`
+                }</span>
+                <span class="file-size">(${formatFileSize(
+                  file.file_size
+                )})</span>
               </div>
               <div class="file-actions">
                 <a href="${fileUrl}" target="_blank" class="btn-download" title="Download">
@@ -324,7 +401,10 @@ function renderFilesList(files) {
 
 function getFileUrl(relativePath) {
   if (!relativePath) return "";
-  if (relativePath.startsWith("http://") || relativePath.startsWith("https://")) {
+  if (
+    relativePath.startsWith("http://") ||
+    relativePath.startsWith("https://")
+  ) {
     return relativePath;
   }
   return relativePath.startsWith("/") ? relativePath : `/${relativePath}`;
@@ -412,7 +492,10 @@ async function loadAlarmMarkers() {
     alarmMarkers.forEach((marker) => marker.setMap(null));
     alarmMarkers = [];
 
-    const [adasResponse, dsmResponse] = await Promise.all([fetch("/api/adas?limit=50"), fetch("/api/dsm?limit=50")]);
+    const [adasResponse, dsmResponse] = await Promise.all([
+      fetch("/api/adas?limit=50"),
+      fetch("/api/dsm?limit=50"),
+    ]);
 
     const adasAlarms = await adasResponse.json();
     const dsmAlarms = await dsmResponse.json();
@@ -515,13 +598,12 @@ async function loadAlarmMarkers() {
 }
 
 function toggleAlarmType(type) {
-  const isADAS = type === "ADAS";
-  const color = isADAS ? "#ef4444" : "#f59e0b";
+  const checkbox = document.getElementById(`toggle${type}`);
+  if (!checkbox) return;
 
   alarmMarkers.forEach((marker) => {
     const title = marker.getTitle();
     if (title.startsWith(type)) {
-      const checkbox = document.getElementById(`toggle${type}`);
       marker.setVisible(checkbox.checked);
     }
   });
@@ -573,7 +655,9 @@ function getAlarmInfoWindowContent(alarm, type) {
       }
       
       <div style="margin-top: 12px;">
-        <button onclick="showVehicleAlarms('${alarm.vehicle_name}', 1)" 
+        <button onclick="showVehicleAlarms('${
+          alarm.vehicle_name
+        }')" 
                 style="background: ${bgColor}; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; width: 100%;">
           <i class="fas fa-list"></i> View All Alarms
         </button>
@@ -582,21 +666,35 @@ function getAlarmInfoWindowContent(alarm, type) {
   `;
 }
 
+function getDisplayNameFromCoordinate(vehicle) {
+  // ✅ fallback kalau field vehicle_name kosong
+  return (
+    vehicle.vehicle_name ||
+    vehicle.name ||
+    vehicle.plate_no ||
+    vehicle.plate ||
+    vehicle.imei
+  );
+}
+
 function updateMap(vehicles) {
   const bounds = new google.maps.LatLngBounds();
 
   vehicles.forEach((vehicle) => {
     const position = { lat: vehicle.lat, lng: vehicle.lng };
     const status = getVehicleStatus(vehicle);
+    const displayName = getDisplayNameFromCoordinate(vehicle);
 
     if (markers[vehicle.imei]) {
       markers[vehicle.imei].setPosition(position);
-      markers[vehicle.imei].setIcon(getMarkerIcon(status, vehicle.speed, vehicle.azimuth));
+      markers[vehicle.imei].setIcon(
+        getMarkerIcon(status, vehicle.speed, vehicle.azimuth)
+      );
     } else {
       const marker = new google.maps.Marker({
         position: position,
         map: map,
-        title: vehicle.vehicle_name,
+        title: displayName,
         icon: getMarkerIcon(status, vehicle.speed, vehicle.azimuth),
       });
 
@@ -650,17 +748,22 @@ function getMarkerIcon(status, speed, azimuth) {
 function getInfoWindowContent(vehicle) {
   const status = getVehicleStatus(vehicle);
   const lastUpdate = new Date(vehicle.event_time).toLocaleString("id-ID");
+  const displayName = getDisplayNameFromCoordinate(vehicle);
 
   return `
         <div style="padding: 10px; min-width: 250px;">
-            <h3 style="margin: 0 0 10px 0; color: #003d5c;">${vehicle.vehicle_name}</h3>
+            <h3 style="margin: 0 0 10px 0; color: #003d5c;">${displayName}</h3>
             <div style="font-size: 13px; line-height: 1.8;">
                 <div><strong>Status:</strong> <span style="color: ${getStatusColor(
                   status
                 )}; font-weight: 600;">${status.toUpperCase()}</span></div>
                 <div><strong>Speed:</strong> ${vehicle.speed} km/h</div>
-                <div><strong>Mileage:</strong> ${vehicle.mileage.toFixed(1)} km</div>
-                <div><strong>Satellites:</strong> ${vehicle.additional?.satellites || 0}</div>
+                <div><strong>Mileage:</strong> ${vehicle.mileage.toFixed(
+                  1
+                )} km</div>
+                <div><strong>Satellites:</strong> ${
+                  vehicle.additional?.satellites || 0
+                }</div>
                 <div><strong>Last Update:</strong> ${lastUpdate}</div>
             </div>
             <div style="margin-top: 10px;">
@@ -699,11 +802,14 @@ function updateTable(vehicles) {
       const timeDiff = Math.floor((Date.now() - lastUpdate.getTime()) / 1000);
       const timeAgo = formatTimeAgo(timeDiff);
       const heading = getCompassDirection(vehicle.azimuth);
+      const displayName = getDisplayNameFromCoordinate(vehicle);
 
       return `
-            <tr class="vehicle-row" data-imei="${vehicle.imei}" onclick="selectVehicle('${vehicle.imei}')">
+            <tr class="vehicle-row" data-imei="${vehicle.imei}" onclick="selectVehicle('${
+        vehicle.imei
+      }')">
                 <td>
-                    <strong>${vehicle.vehicle_name}</strong><br>
+                    <strong>${displayName}</strong><br>
                     <small style="color: #666;">${vehicle.imei}</small>
                 </td>
                 <td>
@@ -726,12 +832,18 @@ function updateTable(vehicles) {
                     </a>
                 </td>
                 <td>
-                    <i class="fas fa-satellite"></i> ${vehicle.additional?.satellites || 0} sats<br>
-                    <small style="color: #666;">Signal: ${vehicle.additional?.gsm_signal || 0}</small>
+                    <i class="fas fa-satellite"></i> ${
+                      vehicle.additional?.satellites || 0
+                    } sats<br>
+                    <small style="color: #666;">Signal: ${
+                      vehicle.additional?.gsm_signal || 0
+                    }</small>
                 </td>
                 <td>
                     <span class="last-update">${timeAgo}</span><br>
-                    <small style="color: #666;">${lastUpdate.toLocaleTimeString("id-ID")}</small>
+                    <small style="color: #666;">${lastUpdate.toLocaleTimeString(
+                      "id-ID"
+                    )}</small>
                 </td>
                 <td>
                     <button class="btn-icon" onclick="event.stopPropagation(); viewHistory('${

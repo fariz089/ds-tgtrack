@@ -167,7 +167,7 @@ const vehiclesData = [
 
 async function seedVehicles() {
   try {
-    const mongoUri = process.env.MONGO_URI || "mongodb://root:example@localhost:27017/alertsDB?authSource=admin";
+    const mongoUri = process.env.MONGO_URI || "mongodb://root:example@mongo:27017/alertsDB?authSource=admin";
 
     console.log("Connecting to MongoDB...");
     await mongoose.connect(mongoUri, {

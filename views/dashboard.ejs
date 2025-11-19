@@ -1,5 +1,31 @@
 <link rel="stylesheet" href="/css/dashboard.css" />
 
+
+<div style="margin-bottom: 15px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+  <div>
+    <label style="font-size:12px; color:#666;">Start date</label><br>
+    <input type="datetime-local" id="safetyStart" style="padding:4px 8px; font-size:12px;">
+  </div>
+  <div>
+    <label style="font-size:12px; color:#666;">End date</label><br>
+    <input type="datetime-local" id="safetyEnd" style="padding:4px 8px; font-size:12px;">
+  </div>
+  <div>
+    <label style="font-size:12px; color:#666;">Last (hours)</label><br>
+    <select id="safetyHours" style="padding:4px 8px; font-size:12px;">
+      <option value="1">1 jam</option>
+      <option value="3">3 jam</option>
+      <option value="5">5 jam</option>
+      <option value="24">24 jam</option>
+    </select>
+  </div>
+  <div style="margin-top:18px;">
+    <button class="btn-icon" onclick="applySafetyFilter()">
+      <i class="fas fa-filter"></i> Apply
+    </button>
+  </div>
+</div>
+
 <!-- Safety Score Section -->
 <div class="safety-score-section">
   <div class="score-card" id="fleetScoreCard">

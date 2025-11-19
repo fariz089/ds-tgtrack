@@ -1,3 +1,4 @@
+// safetyScoreService.js
 const ADAS = require("./models/adas");
 const DSM = require("./models/dsm");
 const { getAlarmCategory } = require("./alarmTypes");
@@ -117,7 +118,7 @@ class SafetyScoreService {
     return "low";
   }
 
-  // Calculate safety score untuk vehicle dalam time range
+  // ================= VEHICLE SCORE (PER BUS) =================
   async calculateVehicleScore(vehicleName, hoursBack = 1) {
     const startTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
     const endTime = new Date();
@@ -186,10 +187,24 @@ class SafetyScoreService {
     };
   }
 
-  // Calculate fleet-wide safety score
-  async calculateFleetScore(hoursBack = 1) {
-    const startTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
-    const endTime = new Date();
+  // ================= FLEET SCORE (SEMUA BUS) =================
+  async calculateFleetScore(options = {}) {
+    let startTime, endTime, hoursUsed;
+
+    if (options.startDate && options.endDate) {
+      // Mode custom range (pakai tanggal dari frontend)
+      startTime = new Date(options.startDate);
+      endTime = new Date(options.endDate);
+
+      // Hanya untuk informasi, berapa jam rentangnya
+      hoursUsed = Math.max((endTime - startTime) / (60 * 60 * 1000), 0);
+    } else {
+      // Mode "X jam ke belakang"
+      const hoursBack = options.hoursBack || 1;
+      endTime = new Date();
+      startTime = new Date(endTime.getTime() - hoursBack * 60 * 60 * 1000);
+      hoursUsed = hoursBack;
+    }
 
     const query = {
       event_time: { $gte: startTime, $lte: endTime },
@@ -248,26 +263,33 @@ class SafetyScoreService {
     return {
       score: Math.round(fleetScore),
       grade: this.getGrade(fleetScore),
-      total_vehicles: vehicleCount,
+      total_vehicles: vehicleNames.length,
       total_alarms: adasAlarms.length + dsmAlarms.length,
       category_breakdown: categoryBreakdown,
       severity_counts: severityCounts,
       time_range: {
         start: startTime,
         end: endTime,
-        hours: hoursBack,
+        hours: hoursUsed, // ✅ selalu terdefinisi di dua mode
       },
     };
   }
 
-  // Get top risky vehicles
-  async getRiskyVehicles(hoursBack = 1, limit = 5) {
-    const startTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
-    const endTime = new Date();
+  // ================= RISKY VEHICLES =================
+  async getRiskyVehicles(options = {}) {
+    const limit = options.limit || 5;
+    let startTime, endTime;
 
-    const query = {
-      event_time: { $gte: startTime, $lte: endTime },
-    };
+    if (options.startDate && options.endDate) {
+      startTime = new Date(options.startDate);
+      endTime = new Date(options.endDate);
+    } else {
+      const hoursBack = options.hoursBack || 1;
+      endTime = new Date();
+      startTime = new Date(endTime.getTime() - hoursBack * 60 * 60 * 1000);
+    }
+
+    const query = { event_time: { $gte: startTime, $lte: endTime } };
 
     const adasAlarms = await ADAS.find(query);
     const dsmAlarms = await DSM.find(query);
@@ -337,7 +359,7 @@ class SafetyScoreService {
       });
     });
 
-    // Convert to array and calculate scores
+    // Convert ke array dan hitung score
     const results = Object.values(vehicleScores).map((v) => ({
       vehicle_name: v.vehicle_name,
       score: Math.max(0, Math.round(100 - v.penalty)),
@@ -345,15 +367,16 @@ class SafetyScoreService {
       alarm_count: v.alarms.length,
       severity_counts: v.severityCounts,
       category_breakdown: v.categoryBreakdown,
-      top_alarms: v.alarms.sort((a, b) => b.weight - a.weight).slice(0, 3), // Top 3 most severe alarms
+      top_alarms: v.alarms.sort((a, b) => b.weight - a.weight).slice(0, 3), // Top 3 alarms
     }));
 
-    // Sort by score (lowest first = most risky)
+    // Urutkan dari paling berisiko (score terendah)
     results.sort((a, b) => a.score - b.score);
 
     return results.slice(0, limit);
   }
 
+  // ================= GRADE & STATISTICS =================
   getGrade(score) {
     if (score >= 90) return { letter: "A", color: "#22c55e", label: "Excellent", icon: "🏆" };
     if (score >= 80) return { letter: "B", color: "#84cc16", label: "Good", icon: "👍" };

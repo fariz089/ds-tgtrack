@@ -1,3 +1,4 @@
+// index.js
 const puppeteer = require("puppeteer");
 const axios = require("axios");
 const path = require("path");
@@ -36,7 +37,9 @@ const safetyScoreService = new SafetyScoreService();
 // Helper to get vehicles from database with fallback
 async function getVehiclesList() {
   try {
-    const vehicles = await Vehicle.find({ status: "active" }).select("name").lean();
+    const vehicles = await Vehicle.find({ status: "active" })
+      .select("name")
+      .lean();
 
     if (vehicles.length > 0) {
       return vehicles.map((v) => v.name).sort();
@@ -126,7 +129,9 @@ app.get("/api/alerts", async (req, res) => {
       query.vehicle = vehicle;
     }
 
-    const alerts = await Alert.find(query).sort({ timestamp: -1 }).limit(parseInt(limit));
+    const alerts = await Alert.find(query)
+      .sort({ timestamp: -1 })
+      .limit(parseInt(limit));
 
     res.json(alerts);
   } catch (err) {
@@ -154,7 +159,9 @@ app.get("/api/adas", async (req, res) => {
       };
     }
 
-    const adasData = await ADAS.find(query).sort({ event_time: -1 }).limit(parseInt(limit));
+    const adasData = await ADAS.find(query)
+      .sort({ event_time: -1 })
+      .limit(parseInt(limit));
 
     res.json(adasData);
   } catch (err) {
@@ -182,7 +189,9 @@ app.get("/api/dsm", async (req, res) => {
       };
     }
 
-    const dsmData = await DSM.find(query).sort({ event_time: -1 }).limit(parseInt(limit));
+    const dsmData = await DSM.find(query)
+      .sort({ event_time: -1 })
+      .limit(parseInt(limit));
 
     res.json(dsmData);
   } catch (err) {
@@ -319,7 +328,9 @@ app.get("/api/coordinates/history/:imei", async (req, res) => {
       };
     }
 
-    const history = await Coordinate.find(query).sort({ event_time: -1 }).limit(parseInt(limit));
+    const history = await Coordinate.find(query)
+      .sort({ event_time: -1 })
+      .limit(parseInt(limit));
 
     res.json(history);
   } catch (err) {
@@ -359,8 +370,20 @@ app.get("/api/fleet/map", async (req, res) => {
 // API: Get fleet safety score
 app.get("/api/safety/fleet-score", async (req, res) => {
   try {
-    const { hours = 1 } = req.query;
-    const fleetScore = await safetyScoreService.calculateFleetScore(parseInt(hours));
+    const { hours, startDate, endDate } = req.query;
+
+    const options = {};
+
+    if (startDate && endDate) {
+      // mode custom tanggal
+      options.startDate = startDate;
+      options.endDate = endDate;
+    } else {
+      // mode last X hours (3 jam, 5 jam, dst.)
+      options.hoursBack = parseInt(hours) || 1;
+    }
+
+    const fleetScore = await safetyScoreService.calculateFleetScore(options);
     res.json(fleetScore);
   } catch (err) {
     console.error("Error calculating fleet score:", err);
@@ -373,7 +396,10 @@ app.get("/api/safety/vehicle-score/:vehicleName", async (req, res) => {
   try {
     const { vehicleName } = req.params;
     const { hours = 1 } = req.query;
-    const vehicleScore = await safetyScoreService.calculateVehicleScore(vehicleName, parseInt(hours));
+    const vehicleScore = await safetyScoreService.calculateVehicleScore(
+      vehicleName,
+      parseInt(hours)
+    );
     res.json(vehicleScore);
   } catch (err) {
     console.error("Error calculating vehicle score:", err);
@@ -384,8 +410,18 @@ app.get("/api/safety/vehicle-score/:vehicleName", async (req, res) => {
 // API: Get risky vehicles
 app.get("/api/safety/risky-vehicles", async (req, res) => {
   try {
-    const { hours = 1, limit = 5 } = req.query;
-    const riskyVehicles = await safetyScoreService.getRiskyVehicles(parseInt(hours), parseInt(limit));
+    const { hours, startDate, endDate, limit = 5 } = req.query;
+
+    const options = { limit: parseInt(limit) || 5 };
+
+    if (startDate && endDate) {
+      options.startDate = startDate;
+      options.endDate = endDate;
+    } else {
+      options.hoursBack = parseInt(hours) || 1;
+    }
+
+    const riskyVehicles = await safetyScoreService.getRiskyVehicles(options);
     res.json(riskyVehicles);
   } catch (err) {
     console.error("Error fetching risky vehicles:", err);
@@ -405,15 +441,29 @@ app.get("/api/safety/alarm-statistics", async (req, res) => {
   }
 });
 
+// ✅ API: Get alarms by vehicle (support startDate/endDate atau hours)
 app.get("/api/alarms/by-vehicle/:vehicleName", async (req, res) => {
   try {
     const { vehicleName } = req.params;
-    const { hours = 1, limit = 20 } = req.query;
-    const startTime = new Date(Date.now() - hours * 60 * 60 * 1000);
+    const { hours = 1, limit = 20, startDate, endDate } = req.query;
+
+    let startTime;
+    let endTime;
+
+    if (startDate && endDate) {
+      // mode custom tanggal (pakai yang dikirim front-end)
+      startTime = new Date(startDate);
+      endTime = new Date(endDate);
+    } else {
+      // mode last X hours
+      const h = parseInt(hours) || 1;
+      endTime = new Date();
+      startTime = new Date(endTime.getTime() - h * 60 * 60 * 1000);
+    }
 
     const adasAlarms = await ADAS.find({
       vehicle_name: vehicleName,
-      event_time: { $gte: startTime },
+      event_time: { $gte: startTime, $lte: endTime },
     })
       .sort({ event_time: -1 })
       .limit(parseInt(limit))
@@ -421,7 +471,7 @@ app.get("/api/alarms/by-vehicle/:vehicleName", async (req, res) => {
 
     const dsmAlarms = await DSM.find({
       vehicle_name: vehicleName,
-      event_time: { $gte: startTime },
+      event_time: { $gte: startTime, $lte: endTime },
     })
       .sort({ event_time: -1 })
       .limit(parseInt(limit))
@@ -433,11 +483,12 @@ app.get("/api/alarms/by-vehicle/:vehicleName", async (req, res) => {
 
     res.json({
       vehicle_name: vehicleName,
-      period: `${hours} hour(s)`,
+      period: startDate && endDate ? `${startDate} → ${endDate}` : `${hours} hour(s)`,
       total: allAlarms.length,
       alarms: allAlarms,
     });
   } catch (err) {
+    console.error("Error fetching alarms by vehicle:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -485,16 +536,22 @@ async function waitUntilNext15Seconds() {
   const waitMs = nextTime - now;
   const waitSec = Math.floor(waitMs / 1000);
 
-  console.log(`⏰ Tunggu ${waitSec}s sampai ${nextTime.toLocaleTimeString("id-ID")} untuk cycle berikutnya...`);
+  console.log(
+    `⏰ Tunggu ${waitSec}s sampai ${nextTime.toLocaleTimeString(
+      "id-ID"
+    )} untuk cycle berikutnya...`
+  );
   await sleep(waitMs);
 }
 
 // Format date to API-compatible format with timezone
 function formatTime(date) {
   const pad = (n) => n.toString().padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(
-    date.getMinutes()
-  )}:${pad(date.getSeconds())}+07:00`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+    date.getDate()
+  )}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
+    date.getSeconds()
+  )}+07:00`;
 }
 
 async function main() {
@@ -553,7 +610,14 @@ async function main() {
     console.log("✓ Token dan OrganizeId berhasil diambil\n");
 
     // Initialize workers
-    globalQueue = new AlarmFileQueue(axios, token, organizeId, whatsappService, 5, 300000);
+    globalQueue = new AlarmFileQueue(
+      axios,
+      token,
+      organizeId,
+      whatsappService,
+      5,
+      300000
+    );
     const alarmStoreWorker = new AlarmStoreWorker(axios, token, organizeId);
 
     // Initialize and start coordinate worker
@@ -567,7 +631,11 @@ async function main() {
       let pageNo = 1;
       let fetchedTotal = 0;
 
-      console.log(`📡 Fetching safety alarms range ${formatTime(startTime)} -> ${formatTime(endTime)}`);
+      console.log(
+        `📡 Fetching safety alarms range ${formatTime(
+          startTime
+        )} -> ${formatTime(endTime)}`
+      );
 
       while (true) {
         const requestData = {
@@ -594,14 +662,19 @@ async function main() {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
           "X-Api-Version": "1.0.4",
-          "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+          "sec-ch-ua":
+            '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
           "sec-ch-ua-mobile": "?0",
           "sec-ch-ua-platform": '"Windows"',
         };
 
         console.log(`   → Request page ${pageNo}, limit ${pageLimit}`);
 
-        const response = await axios.post("https://ds.tgtrack.com/api/jtt808/alarm/safety", requestData, { headers });
+        const response = await axios.post(
+          "https://ds.tgtrack.com/api/jtt808/alarm/safety",
+          requestData,
+          { headers }
+        );
         const safetyData = response.data;
 
         const rows = safetyData.result?.rows || [];
@@ -611,11 +684,19 @@ async function main() {
         if (rows.length > 0 && rows[0]) {
           const firstAlarm = rows[0];
           console.log("\n🔍 DEBUG RAW ALARM:");
-          console.log("  Request range:", requestData.start_time, "->", requestData.end_time);
+          console.log(
+            "  Request range:",
+            requestData.start_time,
+            "->",
+            requestData.end_time
+          );
           console.log("  First alarm vehicle:", firstAlarm.vehicle_name);
           console.log("  event_time (raw):", firstAlarm.event_time);
           console.log("  event_time (Date):", new Date(firstAlarm.event_time));
-          console.log("  event_time (ISO):", new Date(firstAlarm.event_time).toISOString());
+          console.log(
+            "  event_time (ISO):",
+            new Date(firstAlarm.event_time).toISOString()
+          );
           console.log("");
         }
 
@@ -643,7 +724,9 @@ async function main() {
         pageNo++;
       }
 
-      console.log(`📦 Selesai fetch range. Total rows diproses: ${fetchedTotal}\n`);
+      console.log(
+        `📦 Selesai fetch range. Total rows diproses: ${fetchedTotal}\n`
+      );
     }
 
     let cycleCount = 0;
@@ -674,7 +757,9 @@ async function main() {
           const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
           startTime = new Date(endTime.getTime() - THREE_DAYS_MS);
           console.log("🕒 MODE HISTORY: 3 hari ke belakang");
-          console.log("⏳ Fetching historical data... This may take several minutes...");
+          console.log(
+            "⏳ Fetching historical data... This may take several minutes..."
+          );
 
           await fetchAndProcessRange(startTime, endTime, {
             includeQueue: false,
@@ -682,7 +767,9 @@ async function main() {
           });
 
           firstCycle = false;
-          console.log("✅ HISTORY MODE COMPLETED! Next cycle will be REALTIME.\n");
+          console.log(
+            "✅ HISTORY MODE COMPLETED! Next cycle will be REALTIME.\n"
+          );
         } else {
           startTime = new Date(endTime.getTime() - 60000);
           console.log("🕒 MODE REALTIME: 60 detik terakhir");
@@ -698,9 +785,9 @@ async function main() {
         // Re-authenticate if token expired
         if (error.message.includes("401") || error.message.includes("token")) {
           console.log("⚠ Mencoba re-intercept token...");
-          const authData = await interceptAuthData(page);
-          token = authData.token;
-          organizeId = authData.organizeId || "61a22a23e0584dac";
+          const authData2 = await interceptAuthData(page);
+          token = authData2.token;
+          organizeId = authData2.organizeId || "61a22a23e0584dac";
 
           // Update token untuk semua workers
           if (globalQueue) {

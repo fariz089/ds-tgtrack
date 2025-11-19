@@ -1,14 +1,20 @@
 version: "3.8"
+
 services:
   ds-tgtrack:
     build: .
     ports:
       - "8080:8080"
+      - "3000:3000"
     volumes:
       - ./public:/app/public
       - ./models:/app/models
     env_file:
       - .env.production
+    security_opt:
+      - seccomp=unconfined
+    cap_add:
+      - SYS_ADMIN
     depends_on:
       - mongo
 
