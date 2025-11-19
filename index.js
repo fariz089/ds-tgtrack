@@ -1245,7 +1245,7 @@ async function main() {
 
     // Initialize workers
     globalQueue = new AlarmFileQueue(axios, token, organizeId, whatsappService, 5, 300000);
-    const alarmStoreWorker = new AlarmStoreWorker(axios, token, organizeId, 1000);
+    const alarmStoreWorker = new AlarmStoreWorker(axios, token, organizeId, 100);
 
     // Initialize and start coordinate worker
     coordinateWorker = new CoordinateWorker(axios, token, organizeId);
