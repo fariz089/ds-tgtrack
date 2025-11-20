@@ -1,4 +1,5 @@
 const axios = require("axios");
+const https = require("https");
 
 class VideoStreamService {
   constructor() {
@@ -7,6 +8,15 @@ class VideoStreamService {
     this.isInitialized = false;
     this.token = null;
     this.organizeId = null;
+
+    // Create reusable HTTPS agent for better performance
+    this.httpsAgent = new https.Agent({
+      keepAlive: true,
+      keepAliveMsecs: 30000,
+      maxSockets: 50,
+      maxFreeSockets: 10,
+      timeout: 30000,
+    });
   }
 
   /**
@@ -50,70 +60,83 @@ class VideoStreamService {
       });
 
       this.isInitialized = true;
-      console.log("✅ Video streaming page ready");
+      console.log("Video streaming page ready");
     }
 
     return this.videoPage;
   }
 
   /**
-   * Get stream URL dari Gateway API
+   * Get stream URL dari Gateway API with retry logic
    * @param {string} imei - Device IMEI
    * @param {number} channel - Camera channel (1-8)
+   * @param {number} retries - Number of retry attempts (default 3)
    * @returns {Promise<Object>} Stream info (http, m3u8, rtmp, ws)
    */
-  async getStreamInfo(imei, channel = 1) {
-    try {
-      if (!this.token || !this.organizeId) {
-        throw new Error("Token or OrganizeId not set");
-      }
-
-      console.log(`🔍 Getting stream info for ${imei} channel ${channel}...`);
-
-      const response = await axios.post(
-        "https://ds.tgtrack.com/api/gateway/live/play",
-        {
-          zone: "",
-          imei: imei,
-          chn: channel,
-          video_data_type: 0,
-          stream: 1,
-          protocol: "jtt1078",
-        },
-        {
-          headers: {
-            Accept: "application/json, text/plain, */*",
-            "Accept-Language": "en",
-            Authorization: `Bearer ${this.token}`,
-            "Content-Type": "application/json;charset=UTF-8",
-            OrganizeId: this.organizeId,
-            Origin: "https://ds.tgtrack.com",
-            Referer: "https://ds.tgtrack.com/",
-            TimeZone: "+07:00",
-            "X-Api-Version": "1.0.4",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          },
-          timeout: 10000,
+  async getStreamInfo(imei, channel = 1, retries = 3) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        if (!this.token || !this.organizeId) {
+          throw new Error("Token or OrganizeId not set");
         }
-      );
 
-      if (response.data.code === 0 && response.data.result?.data) {
-        const data = response.data.result.data;
-        console.log(`✅ Stream info: ${data.http}`);
-        return {
-          stream_id: data.stream_id,
-          http: data.http,
-          m3u8: data.m3u8,
-          rtmp: data.rtmp,
-          ws: data.ws,
-          is_present: data.is_present,
-        };
-      } else {
-        throw new Error(`API error: ${response.data.msg || "Unknown error"}`);
+        console.log(`🔍 Getting stream info for ${imei} channel ${channel} (attempt ${attempt}/${retries})...`);
+
+        const response = await axios.post(
+          "https://ds.tgtrack.com/api/gateway/live/play",
+          {
+            zone: "",
+            imei: imei,
+            chn: channel,
+            video_data_type: 0,
+            stream: 1,
+            protocol: "jtt1078",
+          },
+          {
+            headers: {
+              Accept: "application/json, text/plain, */*",
+              "Accept-Language": "en",
+              Authorization: `Bearer ${this.token}`,
+              "Content-Type": "application/json;charset=UTF-8",
+              OrganizeId: this.organizeId,
+              Origin: "https://ds.tgtrack.com",
+              Referer: "https://ds.tgtrack.com/",
+              TimeZone: "+07:00",
+              "X-Api-Version": "1.0.4",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            },
+            timeout: 30000, // Increased to 30 seconds
+            httpsAgent: this.httpsAgent, // Use persistent agent
+          }
+        );
+
+        if (response.data.code === 0 && response.data.result?.data) {
+          const data = response.data.result.data;
+          console.log(`Stream info retrieved successfully`);
+          return {
+            stream_id: data.stream_id,
+            http: data.http,
+            m3u8: data.m3u8,
+            rtmp: data.rtmp,
+            ws: data.ws,
+            is_present: data.is_present,
+          };
+        } else {
+          throw new Error(`API error: ${response.data.msg || "Unknown error"}`);
+        }
+      } catch (err) {
+        console.error(`❌ Attempt ${attempt}/${retries} failed: ${err.message}`);
+
+        // If last attempt, throw error
+        if (attempt === retries) {
+          throw err;
+        }
+
+        // Wait before retry (exponential backoff)
+        const waitTime = 1000 * attempt;
+        console.log(`⏳ Retrying in ${waitTime}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
-    } catch (err) {
-      console.error(`❌ Error getting stream info: ${err.message}`);
-      throw err;
     }
   }
 
@@ -171,7 +194,7 @@ class VideoStreamService {
         durationSeconds
       );
 
-      console.log(`✅ Fetched ${(videoBuffer.length / 1024).toFixed(2)} KB`);
+      console.log(`Fetched ${(videoBuffer.length / 1024).toFixed(2)} KB`);
       return Buffer.from(videoBuffer);
     } catch (err) {
       console.error(`❌ Error fetching stream: ${err.message}`);
@@ -230,7 +253,7 @@ class VideoStreamService {
     const results = await Promise.all(checks);
     const availableCount = results.filter((r) => r.available).length;
 
-    console.log(`✅ Found ${availableCount}/8 available cameras`);
+    console.log(`Found ${availableCount}/8 available cameras`);
 
     return results;
   }
