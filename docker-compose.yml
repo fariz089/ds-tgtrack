@@ -3,6 +3,7 @@ services:
     build: .
     container_name: ds-tgtrack-1
     ports:
+      - "8080:8080"
       - "3000:3000"
     volumes:
       - ./public:/app/public
@@ -43,18 +44,18 @@ services:
     networks:
       - app-network
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: cloudflare-tunnel
-    command: tunnel --no-autoupdate run
-    environment:
-      - TUNNEL_TOKEN=eyJhIjoiZjdhOTg5MDE4MGQ1ZGY5ZWM4OWRjZmFiMzRjYTUwNjkiLCJ0IjoiYTE4NWYwNGUtZWU2Ni00Y2UyLWFjYjItOTYwMzk2Yzg3MDE1IiwicyI6IlkyWTROMkV4T1dZdE9UUmxOQzAwTldZMExXSmtNVEF0TTJZMk1qWm1PRGs0WTJJMCJ9
-      - TZ=Asia/Jakarta 
-    restart: unless-stopped
-    depends_on:
-      - ds-tgtrack-1
-    networks:
-      - app-network
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: cloudflare-tunnel
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     - TUNNEL_TOKEN=eyJhIjoiZjdhOTg5MDE4MGQ1ZGY5ZWM4OWRjZmFiMzRjYTUwNjkiLCJ0IjoiYTE4NWYwNGUtZWU2Ni00Y2UyLWFjYjItOTYwMzk2Yzg3MDE1IiwicyI6IlkyWTROMkV4T1dZdE9UUmxOQzAwTldZMExXSmtNVEF0TTJZMk1qWm1PRGs0WTJJMCJ9
+  #     - TZ=Asia/Jakarta 
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - ds-tgtrack-1
+  #   networks:
+  #     - app-network
 
   seed:
     build: .
