@@ -30,7 +30,7 @@ ENV BROWSER_HEADLESS=true \
 
 USER pwuser
 
-EXPOSE 8080
+EXPOSE 8008
 
 CMD export PUPPETEER_EXECUTABLE_PATH=$(ls -d /ms-playwright/chromium-*/chrome-linux/chrome | head -n1) && \
     node index.js

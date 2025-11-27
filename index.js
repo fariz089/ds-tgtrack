@@ -1252,7 +1252,7 @@ async function main() {
     coordinateWorker.start(10000); // Fetch coordinates every 10 seconds
 
     // Initialize websocket
-    initWebSocketServer(8080);
+    initWebSocketServer(8008);
 
     // Fetch and process alarms within time range with pagination
     async function fetchAndProcessRange(startTime, endTime, options = {}) {

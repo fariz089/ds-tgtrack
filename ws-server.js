@@ -5,7 +5,7 @@ let wss = null;
 const clients = new Set();
 
 // Initialize WebSocket Server
-function initWebSocketServer(port = 8080) {
+function initWebSocketServer(port = 8008) {
   if (wss) {
     console.log("⚠️ WebSocket server already initialized");
     return wss;

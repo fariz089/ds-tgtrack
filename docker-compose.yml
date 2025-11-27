@@ -3,7 +3,7 @@ services:
     build: .
     container_name: ds-tgtrack-1
     ports:
-      - "8080:8080"
+      - "8008:8008"
       - "3000:3000"
     volumes:
       - ./public:/app/public
