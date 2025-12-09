@@ -21,6 +21,7 @@ const ADAS = require("./models/adas");
 const DSM = require("./models/dsm");
 const Vehicle = require("./models/vehicle");
 const Coordinate = require("./models/coordinate");
+const HealthData = require("./models/healthData");
 const SafetyScoreService = require("./safetyScoreService");
 const CoordinateWorker = require("./coordinateWorker");
 const AlarmStoreWorker = require("./alarmStoreWorker");
@@ -1126,6 +1127,102 @@ app.get("/api/command-center/vehicle-alarms/:vehicleName", async (req, res) => {
   } catch (err) {
     console.error("Error fetching vehicle alarms:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Save health data from Mi Band
+app.post("/api/save-data", async (req, res) => {
+  try {
+    const {
+      current,
+      dailySteps,
+      dailyCalories,
+      heartRateHistory,
+      sleepData,
+      stressHistory,
+      spo2History,
+      activityBreakdown,
+      timestamp,
+      dataHash,
+      deviceId,
+      syncTime
+    } = req.body;
+
+    // Validation
+    if (!dataHash || !deviceId || !timestamp) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields: dataHash, deviceId, timestamp"
+      });
+    }
+
+    // Check if data already exists
+    const existingData = await HealthData.findOne({ dataHash });
+    
+    if (existingData) {
+      return res.status(409).json({
+        success: false,
+        message: "Data already exists (duplicate)",
+        dataHash: dataHash,
+        existingId: existingData._id
+      });
+    }
+
+    // Create new health data record
+    const healthData = new HealthData({
+      steps: current?.steps || 0,
+      heartRate: current?.heartRate || 0,
+      spo2: current?.spo2 || 0,
+      stress: current?.stress || 0,
+      distance: current?.distance || 0,
+      calories: current?.calories || 0,
+      vitality: current?.vitality || 0,
+      dailySteps: dailySteps || [],
+      dailyCalories: dailyCalories || [],
+      heartRateHistory: heartRateHistory || [],
+      sleepData: sleepData || [],
+      stressHistory: stressHistory || [],
+      spo2History: spo2History || [],
+      activityBreakdown: activityBreakdown || {},
+      timestamp: timestamp,
+      dataHash: dataHash,
+      deviceId: deviceId,
+      syncTime: syncTime ? new Date(syncTime) : new Date()
+    });
+
+    await healthData.save();
+
+    console.log(`✅ Health data saved: ${deviceId} - Steps: ${current?.steps}, HR: ${current?.heartRate}`);
+
+    res.json({
+      success: true,
+      message: "Health data saved successfully",
+      data: {
+        id: healthData._id,
+        deviceId: healthData.deviceId,
+        steps: healthData.steps,
+        heartRate: healthData.heartRate,
+        timestamp: healthData.timestamp,
+        syncTime: healthData.syncTime
+      }
+    });
+
+  } catch (err) {
+    console.error("❌ Error saving health data:", err);
+    
+    if (err.code === 'DUPLICATE_DATA' || err.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "Duplicate data detected",
+        error: err.message
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to save health data",
+      error: err.message
+    });
   }
 });
 
