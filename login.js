@@ -29,8 +29,51 @@ class LoginManager {
   }
 
   async fillLoginForm(page) {
-    await page.waitForSelector("#form_item_account", { timeout: 10000 });
-    console.log("form udah ready");
+    // ✅ Tunggu dengan timeout lebih panjang + multiple attempts
+    console.log("tunggu form login muncul...");
+
+    let formReady = false;
+    let attempts = 0;
+    const maxAttempts = 3;
+
+    while (!formReady && attempts < maxAttempts) {
+      attempts++;
+      console.log(`Attempt ${attempts}/${maxAttempts} - checking form...`);
+
+      try {
+        await page.waitForSelector("#form_item_account", {
+          timeout: 15000,
+          visible: true,
+        });
+        formReady = true;
+        console.log("✓ form udah ready");
+      } catch (error) {
+        console.log(`⚠ Form belum muncul (attempt ${attempts})`);
+
+        if (attempts < maxAttempts) {
+          console.log("Tunggu 3 detik dan coba lagi...");
+          await sleep(3000);
+
+          // ✅ Scroll ke atas (kadang form di luar viewport)
+          await page.evaluate(() => window.scrollTo(0, 0));
+
+          // ✅ Cek URL masih di login page atau tidak
+          const currentUrl = page.url();
+          console.log(`Current URL: ${currentUrl}`);
+
+          if (!currentUrl.includes("login")) {
+            throw new Error(`Not on login page: ${currentUrl}`);
+          }
+        } else {
+          // ✅ Screenshot untuk debugging
+          const screenshotPath = `./logs/form-not-found-${Date.now()}.png`;
+          await page.screenshot({ path: screenshotPath, fullPage: true });
+          console.log(`📸 Screenshot saved: ${screenshotPath}`);
+
+          throw new Error("Form login tidak muncul setelah 3 attempts");
+        }
+      }
+    }
 
     console.log("isi username...");
     await page.type("#form_item_account", this.config.login.username, {
@@ -72,7 +115,41 @@ class LoginManager {
   async login(page) {
     try {
       console.log("buka halaman login...");
-      await page.goto(this.config.login.url, { waitUntil: "networkidle2" });
+
+      // ✅ Goto dengan retry
+      let pageLoaded = false;
+      let gotoAttempts = 0;
+      const maxGotoAttempts = 3;
+
+      while (!pageLoaded && gotoAttempts < maxGotoAttempts) {
+        gotoAttempts++;
+        console.log(`Loading login page (attempt ${gotoAttempts}/${maxGotoAttempts})...`);
+
+        try {
+          await page.goto(this.config.login.url, {
+            waitUntil: "networkidle2",
+            timeout: 30000,
+          });
+          pageLoaded = true;
+          console.log("✓ Login page loaded");
+        } catch (error) {
+          console.log(`⚠ Page load failed (attempt ${gotoAttempts}): ${error.message}`);
+
+          if (gotoAttempts < maxGotoAttempts) {
+            console.log("Retry in 5 seconds...");
+            await sleep(5000);
+          } else {
+            throw new Error("Failed to load login page after all attempts");
+          }
+        }
+      }
+
+      // ✅ Wait extra untuk Vue.js render
+      console.log("tunggu Vue.js render...");
+      await sleep(5000); // Tambah delay untuk SPA
+
+      // ✅ Scroll ke atas
+      await page.evaluate(() => window.scrollTo(0, 0));
 
       await this.fillLoginForm(page);
       await sleep(2000);
@@ -90,6 +167,19 @@ class LoginManager {
         console.log("ga sampe monitor page dalam 30 detik");
         return { success: false, url: page.url() };
       }
+    } catch (error) {
+      console.error("❌ Error during login:", error.message);
+
+      // ✅ Screenshot error
+      try {
+        const screenshotPath = `./logs/login-error-${Date.now()}.png`;
+        await page.screenshot({ path: screenshotPath, fullPage: true });
+        console.log(`📸 Error screenshot: ${screenshotPath}`);
+      } catch (screenshotErr) {
+        // Ignore
+      }
+
+      return { success: false, url: page.url(), error: error.message };
     } finally {
       // hapus file temp
       if (fs.existsSync("./captcha_temp.png")) {
