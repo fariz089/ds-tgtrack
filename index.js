@@ -1292,6 +1292,9 @@ async function main() {
   let globalQueue = null;
   let coordinateWorker = null; // Deklarasi coordinate worker
 
+  let lastLoginTime = null;
+  const RELOGIN_INTERVAL = 5 * 60 * 1000;
+
   try {
     console.log("🚀 Starting DS-TGTrack Monitor Service...\n");
     console.log("launching browser dengan persistent session...");
@@ -1315,6 +1318,7 @@ async function main() {
     const alreadyLoggedIn = await isLoggedIn(page);
 
     if (alreadyLoggedIn) {
+      lastLoginTime = Date.now();
       console.log("✓ Sudah login dari session sebelumnya!");
     } else {
       console.log("Belum login, mulai proses login...");
@@ -1357,6 +1361,7 @@ async function main() {
         if (loginResult.success) {
           console.log("✓ Login berhasil!");
           loginSuccess = true;
+          lastLoginTime = Date.now();
           await sleep(3000);
         } else {
           console.log(`✗ Login attempt ${loginAttempt} gagal, url: ${loginResult.url}`);
@@ -1473,6 +1478,42 @@ async function main() {
     while (true) {
       cycleCount++;
       const now = new Date();
+
+      if (lastLoginTime && Date.now() - lastLoginTime >= RELOGIN_INTERVAL) {
+        console.log("\n🔄 6 jam telah berlalu, re-login...");
+
+        try {
+          const client = await page.target().createCDPSession();
+          await client.send("Network.clearBrowserCookies");
+          await client.send("Network.clearBrowserCache");
+          await page.reload({ waitUntil: "networkidle2" });
+          await sleep(3000);
+
+          const loginManager = new LoginManager(config);
+          const result = await loginManager.login(page);
+
+          if (result.success) {
+            const authData = await interceptAuthData(page);
+            token = authData.token;
+            organizeId = authData.organizeId || "61a22a23e0584dac";
+
+            videoStreamService.setAuth(token, organizeId);
+            if (globalQueue) {
+              globalQueue.token = token;
+              globalQueue.organizeId = organizeId;
+            }
+            if (coordinateWorker) {
+              coordinateWorker.updateAuth(token, organizeId);
+            }
+
+            lastLoginTime = Date.now();
+            console.log("✓ Re-login berhasil!\n");
+          }
+        } catch (err) {
+          console.error("❌ Re-login gagal:", err.message);
+        }
+      }
+
       if (cycleCount > 1 && globalQueue) {
         console.log("");
       }
