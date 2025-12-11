@@ -1323,9 +1323,7 @@ async function main() {
     } else {
       console.log("Belum login, mulai proses login...");
 
-      const loginManager = new LoginManager(config);
-      const loginResult = await loginManager.login(page);
-
+      // ✅ LANGSUNG ke retry loop
       let loginSuccess = false;
       let loginAttempt = 0;
       const MAX_LOGIN_ATTEMPTS = 5;
@@ -1334,6 +1332,7 @@ async function main() {
         loginAttempt++;
         console.log(`🔐 Login attempt ${loginAttempt}/${MAX_LOGIN_ATTEMPTS}`);
 
+        // Clear cookies mulai dari attempt ke-2
         if (loginAttempt > 1) {
           console.log("🧹 Clearing cookies and cache...");
 
@@ -1355,6 +1354,7 @@ async function main() {
           await sleep(2000);
         }
 
+        // ✅ LOGIN di dalam loop
         const loginManager = new LoginManager(config);
         const loginResult = await loginManager.login(page);
 
@@ -1377,9 +1377,6 @@ async function main() {
           }
         }
       }
-
-      console.log("✓ Login berhasil!");
-      await sleep(3000);
     }
 
     console.log("tunggu intercept token...");
