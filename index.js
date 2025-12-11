@@ -1323,7 +1323,7 @@ async function main() {
     } else {
       console.log("Belum login, mulai proses login...");
 
-      // ✅ LANGSUNG ke retry loop
+      // ✅ LANGSUNG ke retry loop (TANPA login dulu)
       let loginSuccess = false;
       let loginAttempt = 0;
       const MAX_LOGIN_ATTEMPTS = 5;
@@ -1332,10 +1332,9 @@ async function main() {
         loginAttempt++;
         console.log(`🔐 Login attempt ${loginAttempt}/${MAX_LOGIN_ATTEMPTS}`);
 
-        // Clear cookies mulai dari attempt ke-2
+        // Clear cookies di attempt ke-2 dst
         if (loginAttempt > 1) {
           console.log("🧹 Clearing cookies and cache...");
-
           try {
             const client = await page.target().createCDPSession();
             await client.send("Network.clearBrowserCookies");
@@ -1345,7 +1344,6 @@ async function main() {
             console.warn("⚠ Failed to clear cache/cookies:", err.message);
           }
 
-          // Reload halaman setelah clear
           console.log("🔄 Reload halaman untuk retry...");
           await page.goto(config.target.url, {
             waitUntil: "networkidle2",
@@ -1354,7 +1352,7 @@ async function main() {
           await sleep(2000);
         }
 
-        // ✅ LOGIN di dalam loop
+        // ✅ LOGIN HANYA DISINI (di dalam loop)
         const loginManager = new LoginManager(config);
         const loginResult = await loginManager.login(page);
 
@@ -1379,8 +1377,10 @@ async function main() {
       }
     }
 
+    // ✅ Lanjut ke intercept token
     console.log("tunggu intercept token...");
     await sleep(2000);
+
     const authData = await interceptAuthData(page);
     token = authData.token;
     organizeId = authData.organizeId || "61a22a23e0584dac";
