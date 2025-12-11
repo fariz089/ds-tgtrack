@@ -1322,9 +1322,55 @@ async function main() {
       const loginManager = new LoginManager(config);
       const loginResult = await loginManager.login(page);
 
-      if (!loginResult.success) {
-        console.log("✗ Login gagal, url terakhir:", loginResult.url);
-        return;
+      let loginSuccess = false;
+      let loginAttempt = 0;
+      const MAX_LOGIN_ATTEMPTS = 5;
+
+      while (!loginSuccess && loginAttempt < MAX_LOGIN_ATTEMPTS) {
+        loginAttempt++;
+        console.log(`🔐 Login attempt ${loginAttempt}/${MAX_LOGIN_ATTEMPTS}`);
+
+        if (loginAttempt > 1) {
+          console.log("🧹 Clearing cookies and cache...");
+
+          try {
+            const client = await page.target().createCDPSession();
+            await client.send("Network.clearBrowserCookies");
+            await client.send("Network.clearBrowserCache");
+            console.log("✓ Cookies & cache cleared");
+          } catch (err) {
+            console.warn("⚠ Failed to clear cache/cookies:", err.message);
+          }
+
+          // Reload halaman setelah clear
+          console.log("🔄 Reload halaman untuk retry...");
+          await page.goto(config.target.url, {
+            waitUntil: "networkidle2",
+            timeout: 30000,
+          });
+          await sleep(2000);
+        }
+
+        const loginManager = new LoginManager(config);
+        const loginResult = await loginManager.login(page);
+
+        if (loginResult.success) {
+          console.log("✓ Login berhasil!");
+          loginSuccess = true;
+          await sleep(3000);
+        } else {
+          console.log(`✗ Login attempt ${loginAttempt} gagal, url: ${loginResult.url}`);
+
+          if (loginAttempt < MAX_LOGIN_ATTEMPTS) {
+            const delays = [5000, 10000, 30000, 60000];
+            const delayMs = delays[loginAttempt - 1] || 60000;
+            console.log(`⏳ Retry dalam ${delayMs / 1000} detik...`);
+            await sleep(delayMs);
+          } else {
+            console.log("❌ Max login attempts tercapai");
+            throw new Error("LOGIN_FAILED_MAX_ATTEMPTS");
+          }
+        }
       }
 
       console.log("✓ Login berhasil!");
@@ -1501,6 +1547,31 @@ async function main() {
   }
 }
 
-setTimeout(() => {
-  main();
-}, 2000);
+async function runWithAutoRestart() {
+  let restartCount = 0;
+  const MAX_RESTARTS = 10;
+
+  while (restartCount < MAX_RESTARTS) {
+    try {
+      console.log(`\n🚀 Service Starting (Attempt ${restartCount + 1}/${MAX_RESTARTS})\n`);
+      await main();
+      break;
+    } catch (error) {
+      restartCount++;
+      console.error(`\n❌ Service crashed (attempt ${restartCount}/${MAX_RESTARTS})`);
+      console.error(`Error: ${error.message}\n`);
+
+      if (restartCount < MAX_RESTARTS) {
+        const restartDelay = Math.min(30000 * restartCount, 300000);
+        console.log(`🔄 Restarting in ${restartDelay / 1000} seconds...\n`);
+        await sleep(restartDelay);
+      } else {
+        console.error("❌ Maximum restart attempts reached.");
+        process.exit(1);
+      }
+    }
+  }
+}
+
+// Start service
+runWithAutoRestart();
