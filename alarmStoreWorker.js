@@ -67,7 +67,7 @@ class AlarmStoreWorker {
     const startTime = Date.now();
     const waitTime = ((startTime - queuedAt) / 1000).toFixed(1);
 
-    console.log(`📁 [${category}] ${alarm.vehicle_name} - ${alarmType} (queue wait: ${waitTime}s)`);
+    // console.log(`📁 [${category}] ${alarm.vehicle_name} - ${alarmType} (queue wait: ${waitTime}s)`);
 
     try {
       const files = await fetchAlarmFiles(this.axios, this.token, this.organizeId, alarmKey, 5, 120000);
@@ -99,9 +99,9 @@ class AlarmStoreWorker {
 
       const processingTime = ((Date.now() - startTime) / 1000).toFixed(1);
 
-      console.log(
-        `✅ ${category} ${alarm.vehicle_name} (IMEI: ${imei}) @ ${speed} km/h - ${files.length} files (${processingTime}s) | Active: ${this.processing.size}/${this.maxConcurrent}`
-      );
+      // console.log(
+      //   `✅ ${category} ${alarm.vehicle_name} (IMEI: ${imei}) @ ${speed} km/h - ${files.length} files (${processingTime}s) | Active: ${this.processing.size}/${this.maxConcurrent}`
+      // );
     } catch (err) {
       if (err.code === 11000) {
         console.log(`⏭️ Duplicate: ${alarmKey}`);

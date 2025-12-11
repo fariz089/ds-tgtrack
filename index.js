@@ -1477,37 +1477,82 @@ async function main() {
       const now = new Date();
 
       if (lastLoginTime && Date.now() - lastLoginTime >= RELOGIN_INTERVAL) {
-        console.log("\n🔄 6 jam telah berlalu, re-login...");
-
         try {
+          // 1. Clear cookies & cache
+          console.log("🧹 Clearing cookies and cache...");
           const client = await page.target().createCDPSession();
           await client.send("Network.clearBrowserCookies");
           await client.send("Network.clearBrowserCache");
-          await page.reload({ waitUntil: "networkidle2" });
+          console.log("✓ Cookies & cache cleared\n");
+
+          // 2. ✅ Navigate ke login page (BUKAN reload!)
+          console.log("🔄 Navigating to login page...");
+          await page.goto(config.target.url, {
+            waitUntil: "networkidle2",
+            timeout: 30000,
+          });
           await sleep(3000);
 
-          const loginManager = new LoginManager(config);
-          const result = await loginManager.login(page);
+          // 3. Perform login dengan retry
+          let reloginSuccess = false;
+          let reloginAttempt = 0;
+          const MAX_RELOGIN_ATTEMPTS = 3;
 
-          if (result.success) {
-            const authData = await interceptAuthData(page);
-            token = authData.token;
-            organizeId = authData.organizeId || "61a22a23e0584dac";
+          while (!reloginSuccess && reloginAttempt < MAX_RELOGIN_ATTEMPTS) {
+            reloginAttempt++;
+            console.log(`🔐 Re-login attempt ${reloginAttempt}/${MAX_RELOGIN_ATTEMPTS}`);
 
-            videoStreamService.setAuth(token, organizeId);
-            if (globalQueue) {
-              globalQueue.token = token;
-              globalQueue.organizeId = organizeId;
+            const loginManager = new LoginManager(config);
+            const result = await loginManager.login(page);
+
+            if (result.success) {
+              console.log("✓ Re-login berhasil!");
+              reloginSuccess = true;
+
+              // 4. Re-intercept token
+              console.log("🔑 Re-intercepting token...");
+              await sleep(2000);
+              const authData = await interceptAuthData(page);
+              token = authData.token;
+              organizeId = authData.organizeId || "61a22a23e0584dac";
+
+              // 5. Update workers
+              console.log("🔄 Updating workers with new token...");
+              videoStreamService.setAuth(token, organizeId);
+
+              if (globalQueue) {
+                globalQueue.token = token;
+                globalQueue.organizeId = organizeId;
+              }
+
+              if (coordinateWorker) {
+                coordinateWorker.updateAuth(token, organizeId);
+              }
+
+              // 6. Update waktu login
+              lastLoginTime = Date.now();
+
+              console.log("\n✅ Re-login completed successfully!");
+              console.log("⏰ Next re-login scheduled in 6 hours\n");
+              console.log("🔄 ========================================\n");
+            } else {
+              console.log(`✗ Re-login attempt ${reloginAttempt} gagal: ${result.url}`);
+
+              if (reloginAttempt < MAX_RELOGIN_ATTEMPTS) {
+                console.log("⏳ Retry dalam 10 detik...");
+                await sleep(10000);
+              }
             }
-            if (coordinateWorker) {
-              coordinateWorker.updateAuth(token, organizeId);
-            }
+          }
 
-            lastLoginTime = Date.now();
-            console.log("✓ Re-login berhasil!\n");
+          // 7. Jika semua attempt gagal, throw error untuk trigger restart
+          if (!reloginSuccess) {
+            throw new Error("RE_LOGIN_FAILED_AFTER_ALL_ATTEMPTS");
           }
         } catch (err) {
-          console.error("❌ Re-login gagal:", err.message);
+          console.error("\n❌ Re-login failed:", err.message);
+          console.error("⚠️  Service will restart to recover\n");
+          throw err; // Re-throw untuk trigger auto-restart
         }
       }
 
