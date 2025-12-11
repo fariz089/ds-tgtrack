@@ -1293,7 +1293,7 @@ async function main() {
   let coordinateWorker = null; // Deklarasi coordinate worker
 
   let lastLoginTime = null;
-  const RELOGIN_INTERVAL = 5 * 60 * 1000;
+  const RELOGIN_INTERVAL = 1 * 60 * 1000;
 
   try {
     console.log("🚀 Starting DS-TGTrack Monitor Service...\n");
@@ -1477,17 +1477,27 @@ async function main() {
       const now = new Date();
 
       if (lastLoginTime && Date.now() - lastLoginTime >= RELOGIN_INTERVAL) {
+        console.log("\n🔄 ========================================");
+        console.log("🔄 6 JAM TELAH BERLALU - AUTO RE-LOGIN");
+        console.log("🔄 ========================================\n");
+
         try {
-          // 1. Clear cookies & cache
           console.log("🧹 Clearing cookies and cache...");
           const client = await page.target().createCDPSession();
           await client.send("Network.clearBrowserCookies");
           await client.send("Network.clearBrowserCache");
-          console.log("✓ Cookies & cache cleared\n");
+          console.log("✓ Cookies & cache cleared");
 
-          // 2. ✅ Navigate ke login page (BUKAN reload!)
+          console.log("🧹 Clearing localStorage and sessionStorage...");
+          await page.evaluate(() => {
+            localStorage.clear();
+            sessionStorage.clear();
+          });
+          console.log("✓ Storage cleared\n");
+
+          // 3. Navigate ke login page
           console.log("🔄 Navigating to login page...");
-          await page.goto(config.target.url, {
+          await page.goto(config.login.url, {
             waitUntil: "networkidle2",
             timeout: 30000,
           });

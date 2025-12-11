@@ -16,7 +16,7 @@ function closeVehicleModal() {
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
-  console.log("✅ FLV.js version:", typeof flvjs !== "undefined" ? flvjs.version : "NOT LOADED");
+  // console.log("✅ FLV.js version:", typeof flvjs !== "undefined" ? flvjs.version : "NOT LOADED");
 
   loadVehicles();
 
@@ -269,7 +269,7 @@ async function validateAlarm(alarmKey, alarmType, status) {
     const result = await response.json();
 
     if (result.success) {
-      console.log(`✅ Alarm ${alarmKey} marked as ${status}`);
+      // console.log(`✅ Alarm ${alarmKey} marked as ${status}`);
 
       // Update local data
       if (window.currentAlarms) {

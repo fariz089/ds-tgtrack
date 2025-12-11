@@ -39,7 +39,9 @@ class LoginManager {
     while (!formReady && attempts < maxAttempts) {
       attempts++;
       console.log(`Attempt ${attempts}/${maxAttempts} - checking form...`);
-
+      
+      await sleep(10000);
+      
       try {
         await page.waitForSelector("#form_item_account", {
           timeout: 15000,
