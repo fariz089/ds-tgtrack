@@ -741,14 +741,14 @@ app.get("/api/alarms/by-vehicle/:vehicleName", async (req, res) => {
 // Middleware: Check video service auth
 function checkVideoAuth(req, res, next) {
   const status = videoStreamService.getStatus();
-  
+
   if (!status.hasAuth) {
-    return res.status(503).json({ 
-      error: 'Video service not ready. Authentication in progress...',
-      status: status
+    return res.status(503).json({
+      error: "Video service not ready. Authentication in progress...",
+      status: status,
     });
   }
-  
+
   next();
 }
 
@@ -1141,30 +1141,31 @@ app.post("/api/save-data", async (req, res) => {
       sleepData,
       stressHistory,
       spo2History,
+      driverName,
       activityBreakdown,
       timestamp,
       dataHash,
       deviceId,
-      syncTime
+      syncTime,
     } = req.body;
 
     // Validation
     if (!dataHash || !deviceId || !timestamp) {
       return res.status(400).json({
         success: false,
-        message: "Missing required fields: dataHash, deviceId, timestamp"
+        message: "Missing required fields: dataHash, deviceId, timestamp",
       });
     }
 
     // Check if data already exists
     const existingData = await HealthData.findOne({ dataHash });
-    
+
     if (existingData) {
       return res.status(409).json({
         success: false,
         message: "Data already exists (duplicate)",
         dataHash: dataHash,
-        existingId: existingData._id
+        existingId: existingData._id,
       });
     }
 
@@ -1183,11 +1184,12 @@ app.post("/api/save-data", async (req, res) => {
       sleepData: sleepData || [],
       stressHistory: stressHistory || [],
       spo2History: spo2History || [],
+      driverName: driverName || "",
       activityBreakdown: activityBreakdown || {},
       timestamp: timestamp,
       dataHash: dataHash,
       deviceId: deviceId,
-      syncTime: syncTime ? new Date(syncTime) : new Date()
+      syncTime: syncTime ? new Date(syncTime) : new Date(),
     });
 
     await healthData.save();
@@ -1203,25 +1205,24 @@ app.post("/api/save-data", async (req, res) => {
         steps: healthData.steps,
         heartRate: healthData.heartRate,
         timestamp: healthData.timestamp,
-        syncTime: healthData.syncTime
-      }
+        syncTime: healthData.syncTime,
+      },
     });
-
   } catch (err) {
     console.error("❌ Error saving health data:", err);
-    
-    if (err.code === 'DUPLICATE_DATA' || err.code === 11000) {
+
+    if (err.code === "DUPLICATE_DATA" || err.code === 11000) {
       return res.status(409).json({
         success: false,
         message: "Duplicate data detected",
-        error: err.message
+        error: err.message,
       });
     }
 
     res.status(500).json({
       success: false,
       message: "Failed to save health data",
-      error: err.message
+      error: err.message,
     });
   }
 });

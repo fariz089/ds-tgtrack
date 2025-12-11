@@ -72,6 +72,9 @@ const healthDataSchema = new mongoose.Schema(
     deviceId: { type: String, required: true, index: true },
     syncTime: { type: Date, default: Date.now },
 
+    // Driver / User
+    driverName: { type: String, required: true },
+
     // Timestamps
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
