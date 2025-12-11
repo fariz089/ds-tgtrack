@@ -1293,7 +1293,7 @@ async function main() {
   let coordinateWorker = null; // Deklarasi coordinate worker
 
   let lastLoginTime = null;
-  const RELOGIN_INTERVAL = 1 * 60 * 1000;
+  const RELOGIN_INTERVAL = 6 * 60 * 60 * 1000;
 
   try {
     console.log("🚀 Starting DS-TGTrack Monitor Service...\n");
