@@ -1149,7 +1149,6 @@ app.post("/api/save-data", async (req, res) => {
       syncTime,
     } = req.body;
 
-    // Validation
     if (!deviceId || !timestamp || !driverName) {
       return res.status(400).json({
         success: false,
@@ -1157,20 +1156,17 @@ app.post("/api/save-data", async (req, res) => {
       });
     }
 
-    // Extract date dari timestamp (YYYY-MM-DD)
+    // ✅ Extract date dari timestamp
     const date = new Date(timestamp).toISOString().split("T")[0];
 
-    // Filter untuk find document berdasarkan deviceId + driverName + date
     const filter = {
       deviceId: deviceId,
       driverName: driverName,
       date: date,
     };
 
-    // Prepare update operations
     const update = {
       $set: {
-        // Update current stats dengan nilai terbaru
         steps: current?.steps || 0,
         heartRate: current?.heartRate || 0,
         spo2: current?.spo2 || 0,
@@ -1184,42 +1180,53 @@ app.post("/api/save-data", async (req, res) => {
         updatedAt: new Date(),
       },
       $setOnInsert: {
-        // Hanya set saat insert pertama kali
         deviceId: deviceId,
         driverName: driverName,
-        date: date,
+        date: date, // ✅ PENTING: Set date di sini
         createdAt: new Date(),
       },
     };
 
-    // Append array data menggunakan $push dengan $each
+    // Heart rate history
     if (heartRateHistory && heartRateHistory.length > 0) {
       update.$push = update.$push || {};
       update.$push.heartRateHistory = {
-        $each: heartRateHistory.map((item) => ({
-          time: new Date(item.time), // Convert ke Date object
-          heartRate: item.heartRate,
-        })),
+        $each: heartRateHistory
+          .filter((item) => item.time)
+          .map((item) => ({
+            time: new Date(item.time),
+            heartRate: parseInt(item.heartRate) || 0,
+          })),
       };
     }
 
+    // SpO2 history
     if (spo2History && spo2History.length > 0) {
       update.$push = update.$push || {};
       update.$push.spo2History = {
-        $each: spo2History.map((item) => ({
-          time: new Date(item.date || item.time), // Support date atau time
-          spo2: item.spo2,
-        })),
+        $each: spo2History
+          .filter((item) => item.time)
+          .map((item) => ({
+            time: new Date(item.time),
+            spo2: parseInt(item.spo2) || 0,
+          })),
       };
     }
 
+    // Stress history
     if (stressHistory && stressHistory.length > 0) {
       update.$push = update.$push || {};
       update.$push.stressHistory = {
-        $each: stressHistory,
+        $each: stressHistory
+          .filter((item) => item.time)
+          .map((item) => ({
+            time: new Date(item.time),
+            stress: parseInt(item.stress) || 0,
+          })),
       };
     }
 
+    // Sleep data
     if (sleepData && sleepData.length > 0) {
       update.$push = update.$push || {};
       update.$push.sleepData = {
@@ -1227,7 +1234,7 @@ app.post("/api/save-data", async (req, res) => {
       };
     }
 
-    // Update dailySteps menggunakan $addToSet untuk avoid duplicate
+    // Daily steps
     if (dailySteps && dailySteps.length > 0) {
       update.$addToSet = update.$addToSet || {};
       update.$addToSet.dailySteps = {
@@ -1235,7 +1242,7 @@ app.post("/api/save-data", async (req, res) => {
       };
     }
 
-    // Update dailyCalories menggunakan $addToSet
+    // Daily calories
     if (dailyCalories && dailyCalories.length > 0) {
       update.$addToSet = update.$addToSet || {};
       update.$addToSet.dailyCalories = {
@@ -1243,25 +1250,20 @@ app.post("/api/save-data", async (req, res) => {
       };
     }
 
-    // Activity breakdown - merge dengan existing
+    // Activity breakdown
     if (activityBreakdown && Object.keys(activityBreakdown).length > 0) {
       update.$set.activityBreakdown = activityBreakdown;
     }
 
-    // Upsert: Update jika ada, Insert jika tidak ada
     const healthData = await HealthData.findOneAndUpdate(filter, update, {
-      new: true, // Return document setelah update
-      upsert: true, // Create jika belum ada
+      new: true,
+      upsert: true,
       runValidators: true,
     });
 
     const isNew = !healthData.createdAt || healthData.createdAt.getTime() === healthData.updatedAt.getTime();
 
-    console.log(
-      `${isNew ? "✅ NEW" : "🔄 UPDATED"} Health data: ${deviceId} - ${driverName} - ${date} - Steps: ${
-        current?.steps
-      }, HR: ${current?.heartRate}`
-    );
+    console.log(`${isNew ? "✅ NEW" : "🔄 UPDATED"} Health data: ${deviceId} - ${driverName} - ${date}`);
 
     res.json({
       success: true,
@@ -1283,11 +1285,10 @@ app.post("/api/save-data", async (req, res) => {
   } catch (err) {
     console.error("❌ Error saving health data:", err);
 
-    // Handle duplicate key error
     if (err.code === 11000) {
       return res.status(409).json({
         success: false,
-        message: "Duplicate data detected - concurrent update conflict",
+        message: "Duplicate data detected",
         error: err.message,
       });
     }
