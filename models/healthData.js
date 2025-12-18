@@ -2,14 +2,12 @@ const mongoose = require("mongoose");
 
 const healthDataSchema = new mongoose.Schema(
   {
-    // Field untuk unique constraint per hari
     date: {
       type: String,
       required: true,
       index: true,
-    }, // Format: "YYYY-MM-DD"
+    },
 
-    // Current stats (nilai terbaru)
     steps: {
       type: Number,
       required: true,
@@ -41,112 +39,107 @@ const healthDataSchema = new mongoose.Schema(
       default: 0,
     },
 
-    // Daily aggregates
     dailySteps: [
       {
-        date: String, // "YYYY-MM-DD"
+        date: String,
         steps: Number,
+        _id: false,
       },
     ],
     dailyCalories: [
       {
-        date: String, // "YYYY-MM-DD"
+        date: String,
         calories: Number,
+        _id: false,
       },
     ],
 
-    // Heart rate history - UBAH: time ke Date object
     heartRateHistory: [
       {
         time: {
-          type: Date,
+          type: String,
           required: true,
-        }, // Full datetime dengan timezone
+        },
         heartRate: {
           type: Number,
           required: true,
         },
+        _id: false,
       },
     ],
 
-    // Sleep data
     sleepData: [
       {
-        date: String, // "YYYY-MM-DD"
+        date: String,
         deep: Number,
         light: Number,
         rem: Number,
         awake: Number,
-        startTime: Date, // Optional: waktu mulai tidur
-        endTime: Date, // Optional: waktu bangun
+        startTime: String,
+        endTime: String,
+        _id: false,
       },
     ],
 
-    // Stress history
     stressHistory: [
       {
-        time: Date, // Full datetime
+        time: String,
         stress: Number,
+        _id: false,
       },
     ],
 
-    // SpO2 history - UBAH: tambah time untuk datetime lengkap
     spo2History: [
       {
         time: {
-          type: Date,
+          type: String,
           required: true,
-        }, // Full datetime dengan timezone
+        },
         spo2: {
           type: Number,
           required: true,
         },
+        _id: false,
       },
     ],
 
-    // Activity breakdown (map of activity types to durations)
     activityBreakdown: {
       type: Map,
       of: Number,
       default: {},
     },
 
-    // Metadata
     timestamp: {
       type: Number,
       required: true,
       index: true,
-    }, // Unix timestamp dari device
+    },
 
     dataHash: {
       type: String,
       required: true,
-    }, // Hash untuk tracking, tapi tidak unique
+    },
 
     deviceId: {
       type: String,
       required: true,
       index: true,
-    }, // ID device Mi Band
+    },
 
     syncTime: {
-      type: Date,
-      default: Date.now,
+      type: String,
       index: true,
-    }, // Waktu sync ke server
+    },
 
-    // Driver / User info
     driverName: {
       type: String,
       required: true,
       index: true,
     },
 
-    // Optional: Additional user info
     vehicleId: String,
     routeId: String,
 
-    // Timestamps (auto-managed by Mongoose)
     createdAt: {
       type: Date,
       default: Date.now,
@@ -157,16 +150,11 @@ const healthDataSchema = new mongoose.Schema(
     },
   },
   {
-    timestamps: true, // Auto-update createdAt dan updatedAt
+    timestamps: true,
     collection: "health_data",
   }
 );
 
-// ==========================================
-// INDEXES
-// ==========================================
-
-// 1. COMPOUND UNIQUE INDEX - Prevent duplicate per driver per hari
 healthDataSchema.index(
   {
     deviceId: 1,
@@ -179,25 +167,16 @@ healthDataSchema.index(
   }
 );
 
-// 2. Query optimization indexes
 healthDataSchema.index({ deviceId: 1, timestamp: -1 });
 healthDataSchema.index({ driverName: 1, date: -1 });
 healthDataSchema.index({ createdAt: -1 });
 healthDataSchema.index({ syncTime: -1 });
-
-// 3. Index untuk filtering berdasarkan tanggal range
 healthDataSchema.index({ date: 1, driverName: 1 });
 
-// ==========================================
-// VIRTUAL FIELDS (Optional)
-// ==========================================
-
-// Virtual untuk mendapatkan total heart rate readings
 healthDataSchema.virtual("heartRateCount").get(function () {
   return this.heartRateHistory?.length || 0;
 });
 
-// Virtual untuk mendapatkan average heart rate
 healthDataSchema.virtual("avgHeartRate").get(function () {
   if (!this.heartRateHistory || this.heartRateHistory.length === 0) {
     return 0;
@@ -206,7 +185,6 @@ healthDataSchema.virtual("avgHeartRate").get(function () {
   return Math.round(sum / this.heartRateHistory.length);
 });
 
-// Virtual untuk mendapatkan heart rate range (min/max)
 healthDataSchema.virtual("heartRateRange").get(function () {
   if (!this.heartRateHistory || this.heartRateHistory.length === 0) {
     return { min: 0, max: 0 };
@@ -218,20 +196,14 @@ healthDataSchema.virtual("heartRateRange").get(function () {
   };
 });
 
-// Virtual untuk average SpO2
 healthDataSchema.virtual("avgSpo2").get(function () {
   if (!this.spo2History || this.spo2History.length === 0) {
     return 0;
   }
   const sum = this.spo2History.reduce((acc, curr) => acc + curr.spo2, 0);
-  return Math.round((sum / this.spo2History.length) * 10) / 10; // 1 decimal
+  return Math.round((sum / this.spo2History.length) * 10) / 10;
 });
 
-// ==========================================
-// METHODS
-// ==========================================
-
-// Method untuk mendapatkan data summary
 healthDataSchema.methods.getSummary = function () {
   return {
     id: this._id,
@@ -259,48 +231,35 @@ healthDataSchema.methods.getSummary = function () {
   };
 };
 
-// Static method untuk get data berdasarkan driver dan date range
 healthDataSchema.statics.getDriverDataByDateRange = function (driverName, startDate, endDate) {
   return this.find({
     driverName: driverName,
     date: {
-      $gte: startDate, // "YYYY-MM-DD"
-      $lte: endDate, // "YYYY-MM-DD"
+      $gte: startDate,
+      $lte: endDate,
     },
   })
     .sort({ date: 1 })
     .lean();
 };
 
-// Static method untuk get latest data per driver
 healthDataSchema.statics.getLatestByDriver = function (driverName) {
   return this.findOne({ driverName: driverName }).sort({ date: -1, syncTime: -1 }).lean();
 };
 
-// ==========================================
-// MIDDLEWARE
-// ==========================================
-
-// Pre-save: Auto-set date dari timestamp jika belum ada
 healthDataSchema.pre("save", function (next) {
   if (!this.date && this.timestamp) {
     const dateObj = new Date(this.timestamp);
-    this.date = dateObj.toISOString().split("T")[0]; // "YYYY-MM-DD"
+    this.date = dateObj.toISOString().split("T")[0];
   }
   next();
 });
 
-// Pre-update: Update updatedAt
 healthDataSchema.pre("findOneAndUpdate", function (next) {
   this.set({ updatedAt: new Date() });
   next();
 });
 
-// ==========================================
-// OPTIONS
-// ==========================================
-
-// Enable virtuals in JSON
 healthDataSchema.set("toJSON", {
   virtuals: true,
   transform: function (doc, ret) {
@@ -312,9 +271,5 @@ healthDataSchema.set("toJSON", {
 healthDataSchema.set("toObject", {
   virtuals: true,
 });
-
-// ==========================================
-// EXPORT MODEL
-// ==========================================
 
 module.exports = mongoose.model("HealthData", healthDataSchema);

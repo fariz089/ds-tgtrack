@@ -1130,7 +1130,19 @@ app.get("/api/command-center/vehicle-alarms/:vehicleName", async (req, res) => {
   }
 });
 
-// API: Save health data from Mi Band
+const deduplicateTimeSeries = (existing = [], incoming = [], timeKey = "time") => {
+  const existingMap = new Map();
+  existing.forEach((item) => {
+    existingMap.set(item[timeKey], item);
+  });
+
+  incoming.forEach((item) => {
+    existingMap.set(item[timeKey], item);
+  });
+
+  return Array.from(existingMap.values()).sort((a, b) => new Date(a[timeKey]) - new Date(b[timeKey]));
+};
+
 app.post("/api/save-data", async (req, res) => {
   try {
     const {
@@ -1156,17 +1168,104 @@ app.post("/api/save-data", async (req, res) => {
       });
     }
 
-    // ✅ Extract date dari timestamp
-    const date = new Date(timestamp).toISOString().split("T")[0];
+    const date = syncTime ? syncTime.split("T")[0] : new Date(timestamp).toISOString().split("T")[0];
 
-    const filter = {
-      deviceId: deviceId,
+    console.log(`[Sync] Driver: ${driverName}, Device: ${deviceId}, Date: ${date}`);
+    console.log(
+      `[Sync] Incoming - Steps: ${dailySteps?.length || 0}, Calories: ${dailyCalories?.length || 0}, HR: ${
+        heartRateHistory?.length || 0
+      }, SpO2: ${spo2History?.length || 0}`
+    );
+
+    const existingDoc = await HealthData.findOne({
       driverName: driverName,
+      deviceId: deviceId,
       date: date,
-    };
+    });
 
-    const update = {
-      $set: {
+    let healthData;
+
+    if (existingDoc) {
+      console.log(`[Sync] Merging with existing document...`);
+
+      const mergedDailySteps = deduplicateTimeSeries(existingDoc.dailySteps || [], dailySteps || [], "date");
+      const mergedDailyCalories = deduplicateTimeSeries(existingDoc.dailyCalories || [], dailyCalories || [], "date");
+      const mergedHeartRateHistory = deduplicateTimeSeries(
+        existingDoc.heartRateHistory || [],
+        heartRateHistory || [],
+        "time"
+      );
+      const mergedSpo2History = deduplicateTimeSeries(existingDoc.spo2History || [], spo2History || [], "time");
+      const mergedSleepData = deduplicateTimeSeries(existingDoc.sleepData || [], sleepData || [], "date");
+      const mergedStressHistory = deduplicateTimeSeries(existingDoc.stressHistory || [], stressHistory || [], "time");
+
+      console.log(
+        `[Sync] After merge - Steps: ${mergedDailySteps.length}, Calories: ${mergedDailyCalories.length}, HR: ${mergedHeartRateHistory.length}, SpO2: ${mergedSpo2History.length}`
+      );
+
+      healthData = await HealthData.findOneAndUpdate(
+        {
+          driverName: driverName,
+          deviceId: deviceId,
+          date: date,
+        },
+        {
+          steps: current?.steps || 0,
+          heartRate: current?.heartRate || 0,
+          spo2: current?.spo2 || 0,
+          stress: current?.stress || 0,
+          distance: current?.distance || 0,
+          calories: current?.calories || 0,
+          vitality: current?.vitality || 0,
+
+          dailySteps: mergedDailySteps,
+          dailyCalories: mergedDailyCalories,
+          heartRateHistory: mergedHeartRateHistory,
+          spo2History: mergedSpo2History,
+          sleepData: mergedSleepData,
+          stressHistory: mergedStressHistory,
+
+          activityBreakdown: activityBreakdown || {},
+          timestamp: timestamp,
+          dataHash: dataHash,
+          syncTime: syncTime,
+          updatedAt: new Date(),
+        },
+        {
+          new: true,
+          runValidators: true,
+        }
+      );
+
+      console.log(`🔄 UPDATED Health data: ${deviceId} - ${driverName} - ${date}`);
+
+      res.json({
+        success: true,
+        message: "Health data updated successfully",
+        isNew: false,
+        data: {
+          id: healthData._id,
+          deviceId: healthData.deviceId,
+          driverName: healthData.driverName,
+          date: healthData.date,
+          steps: healthData.steps,
+          heartRate: healthData.heartRate,
+          heartRateHistoryCount: healthData.heartRateHistory?.length || 0,
+          spo2HistoryCount: healthData.spo2History?.length || 0,
+          dailyStepsCount: healthData.dailySteps?.length || 0,
+          dailyCaloriesCount: healthData.dailyCalories?.length || 0,
+          timestamp: healthData.timestamp,
+          syncTime: healthData.syncTime,
+        },
+      });
+    } else {
+      console.log(`[Sync] Creating new document...`);
+
+      healthData = new HealthData({
+        driverName: driverName,
+        deviceId: deviceId,
+        date: date,
+
         steps: current?.steps || 0,
         heartRate: current?.heartRate || 0,
         spo2: current?.spo2 || 0,
@@ -1174,114 +1273,44 @@ app.post("/api/save-data", async (req, res) => {
         distance: current?.distance || 0,
         calories: current?.calories || 0,
         vitality: current?.vitality || 0,
+
+        dailySteps: deduplicateTimeSeries([], dailySteps || [], "date"),
+        dailyCalories: deduplicateTimeSeries([], dailyCalories || [], "date"),
+        heartRateHistory: deduplicateTimeSeries([], heartRateHistory || [], "time"),
+        spo2History: deduplicateTimeSeries([], spo2History || [], "time"),
+        sleepData: deduplicateTimeSeries([], sleepData || [], "date"),
+        stressHistory: deduplicateTimeSeries([], stressHistory || [], "time"),
+
+        activityBreakdown: activityBreakdown || {},
         timestamp: timestamp,
         dataHash: dataHash,
-        syncTime: syncTime ? new Date(syncTime) : new Date(),
-        updatedAt: new Date(),
-      },
-      $setOnInsert: {
-        deviceId: deviceId,
-        driverName: driverName,
-        date: date, // ✅ PENTING: Set date di sini
-        createdAt: new Date(),
-      },
-    };
+        syncTime: syncTime,
+      });
 
-    // Heart rate history
-    if (heartRateHistory && heartRateHistory.length > 0) {
-      update.$push = update.$push || {};
-      update.$push.heartRateHistory = {
-        $each: heartRateHistory
-          .filter((item) => item.time)
-          .map((item) => ({
-            time: new Date(item.time),
-            heartRate: parseInt(item.heartRate) || 0,
-          })),
-      };
+      await healthData.save();
+
+      console.log(`✅ NEW Health data: ${deviceId} - ${driverName} - ${date}`);
+
+      res.json({
+        success: true,
+        message: "Health data saved successfully",
+        isNew: true,
+        data: {
+          id: healthData._id,
+          deviceId: healthData.deviceId,
+          driverName: healthData.driverName,
+          date: healthData.date,
+          steps: healthData.steps,
+          heartRate: healthData.heartRate,
+          heartRateHistoryCount: healthData.heartRateHistory?.length || 0,
+          spo2HistoryCount: healthData.spo2History?.length || 0,
+          dailyStepsCount: healthData.dailySteps?.length || 0,
+          dailyCaloriesCount: healthData.dailyCalories?.length || 0,
+          timestamp: healthData.timestamp,
+          syncTime: healthData.syncTime,
+        },
+      });
     }
-
-    // SpO2 history
-    if (spo2History && spo2History.length > 0) {
-      update.$push = update.$push || {};
-      update.$push.spo2History = {
-        $each: spo2History
-          .filter((item) => item.time)
-          .map((item) => ({
-            time: new Date(item.time),
-            spo2: parseInt(item.spo2) || 0,
-          })),
-      };
-    }
-
-    // Stress history
-    if (stressHistory && stressHistory.length > 0) {
-      update.$push = update.$push || {};
-      update.$push.stressHistory = {
-        $each: stressHistory
-          .filter((item) => item.time)
-          .map((item) => ({
-            time: new Date(item.time),
-            stress: parseInt(item.stress) || 0,
-          })),
-      };
-    }
-
-    // Sleep data
-    if (sleepData && sleepData.length > 0) {
-      update.$push = update.$push || {};
-      update.$push.sleepData = {
-        $each: sleepData,
-      };
-    }
-
-    // Daily steps
-    if (dailySteps && dailySteps.length > 0) {
-      update.$addToSet = update.$addToSet || {};
-      update.$addToSet.dailySteps = {
-        $each: dailySteps,
-      };
-    }
-
-    // Daily calories
-    if (dailyCalories && dailyCalories.length > 0) {
-      update.$addToSet = update.$addToSet || {};
-      update.$addToSet.dailyCalories = {
-        $each: dailyCalories,
-      };
-    }
-
-    // Activity breakdown
-    if (activityBreakdown && Object.keys(activityBreakdown).length > 0) {
-      update.$set.activityBreakdown = activityBreakdown;
-    }
-
-    const healthData = await HealthData.findOneAndUpdate(filter, update, {
-      new: true,
-      upsert: true,
-      runValidators: true,
-    });
-
-    const isNew = !healthData.createdAt || healthData.createdAt.getTime() === healthData.updatedAt.getTime();
-
-    console.log(`${isNew ? "✅ NEW" : "🔄 UPDATED"} Health data: ${deviceId} - ${driverName} - ${date}`);
-
-    res.json({
-      success: true,
-      message: isNew ? "Health data saved successfully" : "Health data updated successfully",
-      isNew: isNew,
-      data: {
-        id: healthData._id,
-        deviceId: healthData.deviceId,
-        driverName: healthData.driverName,
-        date: healthData.date,
-        steps: healthData.steps,
-        heartRate: healthData.heartRate,
-        heartRateHistoryCount: healthData.heartRateHistory?.length || 0,
-        spo2HistoryCount: healthData.spo2History?.length || 0,
-        timestamp: healthData.timestamp,
-        syncTime: healthData.syncTime,
-      },
-    });
   } catch (err) {
     console.error("❌ Error saving health data:", err);
 
@@ -1300,6 +1329,7 @@ app.post("/api/save-data", async (req, res) => {
     });
   }
 });
+
 
 // Connect to MongoDB
 mongoose
