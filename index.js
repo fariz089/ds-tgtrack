@@ -1150,60 +1150,132 @@ app.post("/api/save-data", async (req, res) => {
     } = req.body;
 
     // Validation
-    if (!dataHash || !deviceId || !timestamp) {
+    if (!deviceId || !timestamp || !driverName) {
       return res.status(400).json({
         success: false,
-        message: "Missing required fields: dataHash, deviceId, timestamp",
+        message: "Missing required fields: deviceId, timestamp, driverName",
       });
     }
 
-    // Check if data already exists
-    const existingData = await HealthData.findOne({ dataHash });
+    // Extract date dari timestamp (YYYY-MM-DD)
+    const date = new Date(timestamp).toISOString().split("T")[0];
 
-    if (existingData) {
-      return res.status(409).json({
-        success: false,
-        message: "Data already exists (duplicate)",
-        dataHash: dataHash,
-        existingId: existingData._id,
-      });
-    }
-
-    // Create new health data record
-    const healthData = new HealthData({
-      steps: current?.steps || 0,
-      heartRate: current?.heartRate || 0,
-      spo2: current?.spo2 || 0,
-      stress: current?.stress || 0,
-      distance: current?.distance || 0,
-      calories: current?.calories || 0,
-      vitality: current?.vitality || 0,
-      dailySteps: dailySteps || [],
-      dailyCalories: dailyCalories || [],
-      heartRateHistory: heartRateHistory || [],
-      sleepData: sleepData || [],
-      stressHistory: stressHistory || [],
-      spo2History: spo2History || [],
-      driverName: driverName || "",
-      activityBreakdown: activityBreakdown || {},
-      timestamp: timestamp,
-      dataHash: dataHash,
+    // Filter untuk find document berdasarkan deviceId + driverName + date
+    const filter = {
       deviceId: deviceId,
-      syncTime: syncTime ? new Date(syncTime) : new Date(),
+      driverName: driverName,
+      date: date,
+    };
+
+    // Prepare update operations
+    const update = {
+      $set: {
+        // Update current stats dengan nilai terbaru
+        steps: current?.steps || 0,
+        heartRate: current?.heartRate || 0,
+        spo2: current?.spo2 || 0,
+        stress: current?.stress || 0,
+        distance: current?.distance || 0,
+        calories: current?.calories || 0,
+        vitality: current?.vitality || 0,
+        timestamp: timestamp,
+        dataHash: dataHash,
+        syncTime: syncTime ? new Date(syncTime) : new Date(),
+        updatedAt: new Date(),
+      },
+      $setOnInsert: {
+        // Hanya set saat insert pertama kali
+        deviceId: deviceId,
+        driverName: driverName,
+        date: date,
+        createdAt: new Date(),
+      },
+    };
+
+    // Append array data menggunakan $push dengan $each
+    if (heartRateHistory && heartRateHistory.length > 0) {
+      update.$push = update.$push || {};
+      update.$push.heartRateHistory = {
+        $each: heartRateHistory.map((item) => ({
+          time: new Date(item.time), // Convert ke Date object
+          heartRate: item.heartRate,
+        })),
+      };
+    }
+
+    if (spo2History && spo2History.length > 0) {
+      update.$push = update.$push || {};
+      update.$push.spo2History = {
+        $each: spo2History.map((item) => ({
+          time: new Date(item.date || item.time), // Support date atau time
+          spo2: item.spo2,
+        })),
+      };
+    }
+
+    if (stressHistory && stressHistory.length > 0) {
+      update.$push = update.$push || {};
+      update.$push.stressHistory = {
+        $each: stressHistory,
+      };
+    }
+
+    if (sleepData && sleepData.length > 0) {
+      update.$push = update.$push || {};
+      update.$push.sleepData = {
+        $each: sleepData,
+      };
+    }
+
+    // Update dailySteps menggunakan $addToSet untuk avoid duplicate
+    if (dailySteps && dailySteps.length > 0) {
+      update.$addToSet = update.$addToSet || {};
+      update.$addToSet.dailySteps = {
+        $each: dailySteps,
+      };
+    }
+
+    // Update dailyCalories menggunakan $addToSet
+    if (dailyCalories && dailyCalories.length > 0) {
+      update.$addToSet = update.$addToSet || {};
+      update.$addToSet.dailyCalories = {
+        $each: dailyCalories,
+      };
+    }
+
+    // Activity breakdown - merge dengan existing
+    if (activityBreakdown && Object.keys(activityBreakdown).length > 0) {
+      update.$set.activityBreakdown = activityBreakdown;
+    }
+
+    // Upsert: Update jika ada, Insert jika tidak ada
+    const healthData = await HealthData.findOneAndUpdate(filter, update, {
+      new: true, // Return document setelah update
+      upsert: true, // Create jika belum ada
+      runValidators: true,
     });
 
-    await healthData.save();
+    const isNew = !healthData.createdAt || healthData.createdAt.getTime() === healthData.updatedAt.getTime();
 
-    console.log(`✅ Health data saved: ${deviceId} - Steps: ${current?.steps}, HR: ${current?.heartRate}`);
+    console.log(
+      `${isNew ? "✅ NEW" : "🔄 UPDATED"} Health data: ${deviceId} - ${driverName} - ${date} - Steps: ${
+        current?.steps
+      }, HR: ${current?.heartRate}`
+    );
 
     res.json({
       success: true,
-      message: "Health data saved successfully",
+      message: isNew ? "Health data saved successfully" : "Health data updated successfully",
+      isNew: isNew,
       data: {
         id: healthData._id,
         deviceId: healthData.deviceId,
+        driverName: healthData.driverName,
+        date: healthData.date,
         steps: healthData.steps,
         heartRate: healthData.heartRate,
+        heartRateHistoryCount: healthData.heartRateHistory?.length || 0,
+        spo2HistoryCount: healthData.spo2History?.length || 0,
         timestamp: healthData.timestamp,
         syncTime: healthData.syncTime,
       },
@@ -1211,10 +1283,11 @@ app.post("/api/save-data", async (req, res) => {
   } catch (err) {
     console.error("❌ Error saving health data:", err);
 
-    if (err.code === "DUPLICATE_DATA" || err.code === 11000) {
+    // Handle duplicate key error
+    if (err.code === 11000) {
       return res.status(409).json({
         success: false,
-        message: "Duplicate data detected",
+        message: "Duplicate data detected - concurrent update conflict",
         error: err.message,
       });
     }
