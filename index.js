@@ -1395,6 +1395,7 @@ async function main() {
   const whatsappService = null;
   let globalQueue = null;
   let coordinateWorker = null; // Deklarasi coordinate worker
+  let alarmStoreWorker = null; // Deklarasi alarm store worker
 
   let lastLoginTime = null;
   const RELOGIN_INTERVAL = 6 * 60 * 60 * 1000;
@@ -1495,7 +1496,7 @@ async function main() {
 
     // Initialize workers
     globalQueue = new AlarmFileQueue(axios, token, organizeId, whatsappService, 5, 300000);
-    const alarmStoreWorker = new AlarmStoreWorker(axios, token, organizeId, 100);
+    alarmStoreWorker = new AlarmStoreWorker(axios, token, organizeId, 100);
 
     // Initialize and start coordinate worker
     coordinateWorker = new CoordinateWorker(axios, token, organizeId);
@@ -1643,6 +1644,11 @@ async function main() {
                 coordinateWorker.updateAuth(token, organizeId);
               }
 
+              if (alarmStoreWorker) {
+                alarmStoreWorker.token = token;
+                alarmStoreWorker.organizeId = organizeId;
+              }
+
               // 6. Update waktu login
               lastLoginTime = Date.now();
 
@@ -1718,6 +1724,11 @@ async function main() {
 
           if (coordinateWorker) {
             coordinateWorker.updateAuth(token, organizeId);
+          }
+
+          if (alarmStoreWorker) {
+            alarmStoreWorker.token = token;
+            alarmStoreWorker.organizeId = organizeId;
           }
         }
       }
