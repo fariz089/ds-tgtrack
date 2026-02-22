@@ -146,6 +146,44 @@ app.get("/dsm", async (req, res) => {
   }
 });
 
+// Fleet Reports page
+app.get("/fleet-reports", async (req, res) => {
+  try {
+    const vehicles = await getVehiclesList();
+    res.render("fleet-reports", {
+      title: "Fleet Reports",
+      vehicles: vehicles,
+      currentPage: "fleet-reports",
+    });
+  } catch (err) {
+    console.error("Error rendering Fleet Reports page:", err);
+    res.render("fleet-reports", {
+      title: "Fleet Reports",
+      vehicles: [],
+      currentPage: "fleet-reports",
+    });
+  }
+});
+
+// Export Data page
+app.get("/export-data", async (req, res) => {
+  try {
+    const vehicles = await getVehiclesList();
+    res.render("export-data", {
+      title: "Export Data",
+      vehicles: vehicles,
+      currentPage: "export-data",
+    });
+  } catch (err) {
+    console.error("Error rendering Export Data page:", err);
+    res.render("export-data", {
+      title: "Export Data",
+      vehicles: [],
+      currentPage: "export-data",
+    });
+  }
+});
+
 // API: Get recent alerts
 app.get("/api/alerts", async (req, res) => {
   try {

@@ -1,0 +1,371 @@
+<link rel="stylesheet" href="/css/dashboard.css" />
+<style>
+  .export-header { background: linear-gradient(135deg, #003d5c 0%, #0066a1 100%); color: white; padding: 24px 28px; border-radius: 10px; margin-bottom: 24px; }
+  .export-header h2 { margin: 0; font-size: 22px; font-weight: 700; }
+  .export-header p { margin: 6px 0 0; font-size: 13px; opacity: 0.85; }
+
+  .export-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin-bottom: 24px; }
+
+  .export-card { background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); overflow: hidden; transition: transform 0.2s, box-shadow 0.2s; }
+  .export-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.1); }
+
+  .card-header { padding: 18px 20px; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 12px; }
+  .card-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+  .card-icon.adas { background: #ede9fe; color: #7c3aed; }
+  .card-icon.dsm { background: #e0f2fe; color: #0284c7; }
+  .card-icon.vehicle { background: #dcfce7; color: #16a34a; }
+  .card-icon.coord { background: #fef3c7; color: #d97706; }
+  .card-title { font-size: 16px; font-weight: 700; color: #1e293b; }
+  .card-desc { font-size: 12px; color: #94a3b8; }
+
+  .card-body { padding: 18px 20px; }
+  .card-body .filter-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .card-body label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px; }
+  .card-body select, .card-body input[type="datetime-local"] { width: 100%; padding: 8px 10px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 12px; }
+  .card-body .field-group { flex: 1; min-width: 130px; }
+
+  .card-footer { padding: 14px 20px; background: #f8fafc; display: flex; gap: 10px; justify-content: flex-end; }
+  .btn-export { padding: 9px 18px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 6px; transition: all 0.2s; }
+  .btn-csv { background: #22c55e; color: white; }
+  .btn-csv:hover { background: #16a34a; }
+  .btn-json { background: #3b82f6; color: white; }
+  .btn-json:hover { background: #2563eb; }
+
+  .export-status { padding: 16px 20px; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  .status-log { font-family: 'Courier New', monospace; font-size: 12px; color: #64748b; max-height: 200px; overflow-y: auto; padding: 10px; background: #f8fafc; border-radius: 6px; margin-top: 10px; }
+  .status-log .log-entry { padding: 3px 0; border-bottom: 1px solid #f1f5f9; }
+  .log-success { color: #16a34a; }
+  .log-error { color: #ef4444; }
+  .log-info { color: #0066a1; }
+
+  .progress-bar { width: 100%; height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; margin-top: 10px; display: none; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #0066a1, #38bdf8); width: 0%; transition: width 0.3s; border-radius: 3px; }
+</style>
+
+<div class="export-header">
+  <h2><i class="fas fa-download"></i> Export Data</h2>
+  <p>Download fleet data as CSV or JSON for external analysis and reporting</p>
+</div>
+
+<div class="export-grid">
+  <!-- ADAS Export -->
+  <div class="export-card">
+    <div class="card-header">
+      <div class="card-icon adas"><i class="fas fa-car-crash"></i></div>
+      <div>
+        <div class="card-title">ADAS Events</div>
+        <div class="card-desc">Collision, Lane Departure, Object Detection</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="filter-row">
+        <div class="field-group">
+          <label>Vehicle</label>
+          <select id="adasVehicle">
+            <option value="all">All Vehicles</option>
+            <% vehicles.forEach(v => { %><option value="<%= v %>"><%= v %></option><% }); %>
+          </select>
+        </div>
+        <div class="field-group">
+          <label>Time Range</label>
+          <select id="adasHours">
+            <option value="24">Last 24 Hours</option>
+            <option value="72">Last 3 Days</option>
+            <option value="168" selected>Last 7 Days</option>
+            <option value="720">Last 30 Days</option>
+            <option value="2160">Last 90 Days</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="card-footer">
+      <button class="btn-export btn-json" onclick="exportData('adas', 'json')"><i class="fas fa-code"></i> JSON</button>
+      <button class="btn-export btn-csv" onclick="exportData('adas', 'csv')"><i class="fas fa-file-csv"></i> CSV</button>
+    </div>
+  </div>
+
+  <!-- DSM Export -->
+  <div class="export-card">
+    <div class="card-header">
+      <div class="card-icon dsm"><i class="fas fa-user-shield"></i></div>
+      <div>
+        <div class="card-title">DSM Events</div>
+        <div class="card-desc">Fatigue, Smoking, Phone, Seatbelt</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="filter-row">
+        <div class="field-group">
+          <label>Vehicle</label>
+          <select id="dsmVehicle">
+            <option value="all">All Vehicles</option>
+            <% vehicles.forEach(v => { %><option value="<%= v %>"><%= v %></option><% }); %>
+          </select>
+        </div>
+        <div class="field-group">
+          <label>Time Range</label>
+          <select id="dsmHours">
+            <option value="24">Last 24 Hours</option>
+            <option value="72">Last 3 Days</option>
+            <option value="168" selected>Last 7 Days</option>
+            <option value="720">Last 30 Days</option>
+            <option value="2160">Last 90 Days</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="card-footer">
+      <button class="btn-export btn-json" onclick="exportData('dsm', 'json')"><i class="fas fa-code"></i> JSON</button>
+      <button class="btn-export btn-csv" onclick="exportData('dsm', 'csv')"><i class="fas fa-file-csv"></i> CSV</button>
+    </div>
+  </div>
+
+  <!-- Vehicle Data Export -->
+  <div class="export-card">
+    <div class="card-header">
+      <div class="card-icon vehicle"><i class="fas fa-truck"></i></div>
+      <div>
+        <div class="card-title">Vehicle Data</div>
+        <div class="card-desc">Fleet vehicle list, status, and metadata</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="filter-row">
+        <div class="field-group" style="flex:1;">
+          <label>Dataset</label>
+          <select id="vehicleDataset">
+            <option value="list">Vehicle List</option>
+            <option value="safety">Safety Scores</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="card-footer">
+      <button class="btn-export btn-json" onclick="exportData('vehicle', 'json')"><i class="fas fa-code"></i> JSON</button>
+      <button class="btn-export btn-csv" onclick="exportData('vehicle', 'csv')"><i class="fas fa-file-csv"></i> CSV</button>
+    </div>
+  </div>
+
+  <!-- Coordinate/GPS Export -->
+  <div class="export-card">
+    <div class="card-header">
+      <div class="card-icon coord"><i class="fas fa-map-marker-alt"></i></div>
+      <div>
+        <div class="card-title">GPS Coordinates</div>
+        <div class="card-desc">Vehicle positions, speed, mileage history</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="filter-row">
+        <div class="field-group">
+          <label>Vehicle</label>
+          <select id="coordVehicle">
+            <option value="all">All Vehicles</option>
+            <% vehicles.forEach(v => { %><option value="<%= v %>"><%= v %></option><% }); %>
+          </select>
+        </div>
+        <div class="field-group">
+          <label>Time Range</label>
+          <select id="coordHours">
+            <option value="1">Last 1 Hour</option>
+            <option value="3">Last 3 Hours</option>
+            <option value="24" selected>Last 24 Hours</option>
+            <option value="72">Last 3 Days</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="card-footer">
+      <button class="btn-export btn-json" onclick="exportData('coordinates', 'json')"><i class="fas fa-code"></i> JSON</button>
+      <button class="btn-export btn-csv" onclick="exportData('coordinates', 'csv')"><i class="fas fa-file-csv"></i> CSV</button>
+    </div>
+  </div>
+</div>
+
+<!-- Export Status -->
+<div class="export-status">
+  <div style="display: flex; justify-content: space-between; align-items: center;">
+    <h4 style="margin: 0; font-size: 14px; color: #374151;"><i class="fas fa-terminal"></i> Export Log</h4>
+    <button onclick="clearLog()" style="padding: 4px 12px; border: 1px solid #e5e7eb; background: white; border-radius: 4px; font-size: 11px; cursor: pointer;">Clear</button>
+  </div>
+  <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
+  <div class="status-log" id="statusLog">
+    <div class="log-entry log-info">Ready to export. Select a dataset and format above.</div>
+  </div>
+</div>
+
+<script>
+function addLog(message, type = 'info') {
+  const log = document.getElementById('statusLog');
+  const entry = document.createElement('div');
+  entry.className = `log-entry log-${type}`;
+  entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+  log.insertBefore(entry, log.firstChild);
+}
+
+function clearLog() {
+  document.getElementById('statusLog').innerHTML = '<div class="log-entry log-info">Log cleared.</div>';
+}
+
+function showProgress(pct) {
+  const bar = document.getElementById('progressBar');
+  const fill = document.getElementById('progressFill');
+  bar.style.display = 'block';
+  fill.style.width = pct + '%';
+  if (pct >= 100) setTimeout(() => { bar.style.display = 'none'; }, 1500);
+}
+
+async function exportData(type, format) {
+  addLog(`Starting ${type} export as ${format.toUpperCase()}...`, 'info');
+  showProgress(10);
+
+  try {
+    let url, params, filename;
+
+    switch (type) {
+      case 'adas': {
+        const vehicle = document.getElementById('adasVehicle').value;
+        const hours = document.getElementById('adasHours').value;
+        url = '/api/adas';
+        params = `?hours=${hours}${vehicle !== 'all' ? '&vehicle=' + encodeURIComponent(vehicle) : ''}`;
+        filename = `adas_events_${hours}h`;
+        break;
+      }
+      case 'dsm': {
+        const vehicle = document.getElementById('dsmVehicle').value;
+        const hours = document.getElementById('dsmHours').value;
+        url = '/api/dsm';
+        params = `?hours=${hours}${vehicle !== 'all' ? '&vehicle=' + encodeURIComponent(vehicle) : ''}`;
+        filename = `dsm_events_${hours}h`;
+        break;
+      }
+      case 'vehicle': {
+        const dataset = document.getElementById('vehicleDataset').value;
+        if (dataset === 'safety') {
+          url = '/api/safety/risky-vehicles';
+          params = '?hours=168&limit=100';
+          filename = 'vehicle_safety_scores';
+        } else {
+          url = '/api/vehicles';
+          params = '';
+          filename = 'vehicle_list';
+        }
+        break;
+      }
+      case 'coordinates': {
+        const vehicle = document.getElementById('coordVehicle').value;
+        const hours = document.getElementById('coordHours').value;
+        url = '/api/coordinates/summary';
+        params = `?hours=${hours}`;
+        filename = `gps_data_${hours}h`;
+        break;
+      }
+    }
+
+    showProgress(30);
+    addLog(`Fetching data from ${url}${params}`, 'info');
+
+    const response = await fetch(url + params);
+    const data = await response.json();
+
+    showProgress(60);
+
+    // Normalize data to array
+    let rows = Array.isArray(data) ? data : (data.data || data.alarms || [data]);
+    addLog(`Retrieved ${rows.length} records`, 'success');
+
+    if (rows.length === 0) {
+      addLog('No data found for this filter.', 'error');
+      showProgress(100);
+      return;
+    }
+
+    showProgress(80);
+
+    let blob, downloadFilename;
+
+    if (format === 'csv') {
+      const csv = convertToCSV(rows);
+      blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+      downloadFilename = `${filename}_${formatDate()}.csv`;
+    } else {
+      const json = JSON.stringify(rows, null, 2);
+      blob = new Blob([json], { type: 'application/json' });
+      downloadFilename = `${filename}_${formatDate()}.json`;
+    }
+
+    // Trigger download
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = downloadFilename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+
+    showProgress(100);
+    addLog(`Downloaded: ${downloadFilename} (${formatSize(blob.size)})`, 'success');
+
+  } catch (err) {
+    addLog(`Export failed: ${err.message}`, 'error');
+    showProgress(100);
+  }
+}
+
+function convertToCSV(data) {
+  if (!data || data.length === 0) return '';
+
+  // Flatten nested objects
+  const flatData = data.map(row => flattenObject(row));
+
+  // Get all unique keys
+  const allKeys = [...new Set(flatData.flatMap(Object.keys))];
+
+  // Header
+  const header = allKeys.join(',');
+
+  // Rows
+  const rows = flatData.map(row => {
+    return allKeys.map(key => {
+      let val = row[key];
+      if (val === null || val === undefined) return '';
+      val = String(val);
+      // Escape CSV special chars
+      if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+        val = '"' + val.replace(/"/g, '""') + '"';
+      }
+      return val;
+    }).join(',');
+  });
+
+  return [header, ...rows].join('\n');
+}
+
+function flattenObject(obj, prefix = '') {
+  const result = {};
+  for (const [key, val] of Object.entries(obj || {})) {
+    const newKey = prefix ? `${prefix}.${key}` : key;
+    if (val && typeof val === 'object' && !Array.isArray(val) && !(val instanceof Date)) {
+      Object.assign(result, flattenObject(val, newKey));
+    } else if (Array.isArray(val)) {
+      result[newKey] = val.length > 0 ? JSON.stringify(val) : '';
+    } else {
+      result[newKey] = val;
+    }
+  }
+  return result;
+}
+
+function formatDate() {
+  const d = new Date();
+  return d.getFullYear() + 
+    String(d.getMonth() + 1).padStart(2, '0') + 
+    String(d.getDate()).padStart(2, '0') + '_' +
+    String(d.getHours()).padStart(2, '0') + 
+    String(d.getMinutes()).padStart(2, '0');
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+</script>
