@@ -1,39 +1,62 @@
 // safetyScoreService.js
+// Fleet Safety Scoring - Normalized Reference-Based Exponential Decay Model
+//
+// Formula: score = 100 * exp(-(critical_rate/REF_CRITICAL + warning_rate/REF_WARNING) / 2)
+//
+// Where:
+//   critical_rate = critical_events / active_vehicles
+//   warning_rate = warning_events / active_vehicles
+//   REF_CRITICAL = baseline critical events per vehicle (default: 10)
+//   REF_WARNING = baseline warning events per vehicle (default: 20)
+//
+// Scoring curve:
+//   0 alarms → 100 (A, Excellent)
+//   1 crit + 5 warn per fleet of 6 → ~97 (A)
+//   5 crit + 20 warn per fleet of 6 → ~88 (B)
+//   15 crit + 30 warn per fleet of 6 → ~78 (C)
+//   32 crit + 44 warn per fleet of 6 → ~64 (D)
+//   50 crit + 80 warn per fleet of 6 → ~47 (F)
+
 const ADAS = require("./models/adas");
 const DSM = require("./models/dsm");
 const { getAlarmCategory } = require("./alarmTypes");
 
 class SafetyScoreService {
   constructor() {
+    // Reference baselines (tunable)
+    // These represent "moderately bad" performance per vehicle
+    this.REF_CRITICAL = 10; // critical events per vehicle per time period
+    this.REF_WARNING = 20; // warning events per vehicle per time period
+
     // Weight berdasarkan severity dan kategori
     this.categoryWeights = {
       ADAS: {
-        critical: 10, // FCW, PCW
-        high: 8, // Halangan, terlalu dekat
-        medium: 6, // LDW, melanggar rambu
-        low: 4, // Sering ganti jalur, kamera terhalang
+        critical: 10,
+        high: 8,
+        medium: 6,
+        low: 4,
       },
       DSM: {
-        critical: 10, // Lelah, mata tertutup, abnormal
-        high: 8, // Tidak pegang setir, tidak sabuk
-        medium: 7, // Telepon, tidak fokus
-        low: 5, // Merokok, menguap
+        critical: 10,
+        high: 8,
+        medium: 7,
+        low: 5,
       },
       FM: {
-        critical: 9, // Kelebihan kecepatan
-        high: 7, // Pengereman mendadak
-        medium: 6, // Akselerasi mendadak
-        low: 5, // Belok/ganti jalur mendadak
+        critical: 9,
+        high: 7,
+        medium: 6,
+        low: 5,
       },
       BSD: {
-        critical: 8, // Pendekatan dari belakang
+        critical: 8,
         high: 7,
         medium: 6,
         low: 5,
       },
     };
 
-    // Specific alarm type weights (override category defaults)
+    // Specific alarm type weights
     this.alarmWeights = {
       // ADAS - Critical
       "Peringatan tabrakan depan (FCW)": 10,
@@ -75,8 +98,6 @@ class SafetyScoreService {
       "Fungsi monitoring DSM gagal": 2,
       "Alarm infrared terhalang": 2,
       "Lensa kamera terhalang": 2,
-      "Snapshot otomatis": 1,
-      "Event penggantian pengemudi": 1,
 
       // FM - Critical
       "Kelebihan kecepatan": 9,
@@ -87,7 +108,7 @@ class SafetyScoreService {
       "Belok mendadak": 5,
       "Ganti jalur mendadak": 5,
 
-      // BSD - All high priority
+      // BSD
       "Alarm pendekatan dari belakang": 8,
       "Alarm pendekatan dari belakang kiri": 7,
       "Alarm pendekatan dari belakang kanan": 7,
@@ -96,17 +117,12 @@ class SafetyScoreService {
 
   // Get weight untuk alarm type
   getAlarmWeight(alarmType, category) {
-    // Cek specific weight dulu
     if (this.alarmWeights[alarmType]) {
       return this.alarmWeights[alarmType];
     }
-
-    // Fallback ke category default weight
     if (category && this.categoryWeights[category]) {
       return this.categoryWeights[category].medium || 5;
     }
-
-    // Default weight
     return 5;
   }
 
@@ -116,6 +132,29 @@ class SafetyScoreService {
     if (weight >= 7) return "high";
     if (weight >= 5) return "medium";
     return "low";
+  }
+
+  // ================= CORE SCORING FUNCTION =================
+  // Normalized exponential decay scoring
+  // Returns 0-100, accounts for fleet size
+  calculateNormalizedScore(severityCounts, vehicleCount) {
+    const activeVehicles = Math.max(vehicleCount, 1);
+
+    // Critical = critical + high severity events
+    const criticalEvents = (severityCounts.critical || 0) + (severityCounts.high || 0);
+    // Warning = medium + low severity events
+    const warningEvents = (severityCounts.medium || 0) + (severityCounts.low || 0);
+
+    // Normalize per vehicle
+    const criticalRate = criticalEvents / activeVehicles;
+    const warningRate = warningEvents / activeVehicles;
+
+    // Exponential decay with reference baselines
+    const normalizedPenalty =
+      criticalRate / this.REF_CRITICAL + warningRate / this.REF_WARNING;
+    const score = 100 * Math.exp(-normalizedPenalty / 2);
+
+    return Math.round(Math.max(0, Math.min(100, score)));
   }
 
   // ================= VEHICLE SCORE (PER BUS) =================
@@ -131,59 +170,34 @@ class SafetyScoreService {
     const adasAlarms = await ADAS.find(query);
     const dsmAlarms = await DSM.find(query);
 
-    let totalPenalty = 0;
-    let severityCounts = {
-      critical: 0,
-      high: 0,
-      medium: 0,
-      low: 0,
-    };
+    let severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+    let categoryBreakdown = { ADAS: 0, DSM: 0, FM: 0, BSD: 0 };
 
-    let categoryBreakdown = {
-      ADAS: 0,
-      DSM: 0,
-      FM: 0,
-      BSD: 0,
-    };
-
-    // Process ADAS alarms
     adasAlarms.forEach((alarm) => {
-      const category = "ADAS";
-      const weight = this.getAlarmWeight(alarm.alarm_type, category);
+      const weight = this.getAlarmWeight(alarm.alarm_type, "ADAS");
       const severity = this.getSeverity(weight);
-
-      totalPenalty += weight;
       severityCounts[severity]++;
       categoryBreakdown.ADAS++;
     });
 
-    // Process DSM alarms
     dsmAlarms.forEach((alarm) => {
-      const category = "DSM";
-      const weight = this.getAlarmWeight(alarm.alarm_type, category);
+      const weight = this.getAlarmWeight(alarm.alarm_type, "DSM");
       const severity = this.getSeverity(weight);
-
-      totalPenalty += weight;
       severityCounts[severity]++;
       categoryBreakdown.DSM++;
     });
 
-    // Calculate score (100 - penalty, minimum 0)
-    const baseScore = 100;
-    const score = Math.max(0, baseScore - totalPenalty);
+    // For single vehicle, use vehicleCount = 1
+    const score = this.calculateNormalizedScore(severityCounts, 1);
 
     return {
       vehicle_name: vehicleName,
-      score: Math.round(score),
+      score,
       grade: this.getGrade(score),
       total_alarms: adasAlarms.length + dsmAlarms.length,
       category_breakdown: categoryBreakdown,
       severity_counts: severityCounts,
-      time_range: {
-        start: startTime,
-        end: endTime,
-        hours: hoursBack,
-      },
+      time_range: { start: startTime, end: endTime, hours: hoursBack },
     };
   }
 
@@ -192,86 +206,58 @@ class SafetyScoreService {
     let startTime, endTime, hoursUsed;
 
     if (options.startDate && options.endDate) {
-      // Mode custom range (pakai tanggal dari frontend)
       startTime = new Date(options.startDate);
       endTime = new Date(options.endDate);
-
-      // Hanya untuk informasi, berapa jam rentangnya
       hoursUsed = Math.max((endTime - startTime) / (60 * 60 * 1000), 0);
     } else {
-      // Mode "X jam ke belakang"
       const hoursBack = options.hoursBack || 1;
       endTime = new Date();
       startTime = new Date(endTime.getTime() - hoursBack * 60 * 60 * 1000);
       hoursUsed = hoursBack;
     }
 
-    const query = {
-      event_time: { $gte: startTime, $lte: endTime },
-    };
+    const query = { event_time: { $gte: startTime, $lte: endTime } };
 
     const adasAlarms = await ADAS.find(query);
     const dsmAlarms = await DSM.find(query);
 
     // Get unique vehicles
     const vehicleNames = [
-      ...new Set([...adasAlarms.map((a) => a.vehicle_name), ...dsmAlarms.map((d) => d.vehicle_name)]),
+      ...new Set([
+        ...adasAlarms.map((a) => a.vehicle_name),
+        ...dsmAlarms.map((d) => d.vehicle_name),
+      ]),
     ].filter((v) => v && v !== "Unknown");
 
-    let totalPenalty = 0;
-    let severityCounts = {
-      critical: 0,
-      high: 0,
-      medium: 0,
-      low: 0,
-    };
+    let severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+    let categoryBreakdown = { ADAS: 0, DSM: 0, FM: 0, BSD: 0 };
 
-    let categoryBreakdown = {
-      ADAS: 0,
-      DSM: 0,
-      FM: 0,
-      BSD: 0,
-    };
-
-    // Calculate penalties for ADAS
     adasAlarms.forEach((alarm) => {
-      const category = "ADAS";
-      const weight = this.getAlarmWeight(alarm.alarm_type, category);
+      const weight = this.getAlarmWeight(alarm.alarm_type, "ADAS");
       const severity = this.getSeverity(weight);
-
-      totalPenalty += weight;
       severityCounts[severity]++;
       categoryBreakdown.ADAS++;
     });
 
-    // Calculate penalties for DSM
     dsmAlarms.forEach((alarm) => {
-      const category = "DSM";
-      const weight = this.getAlarmWeight(alarm.alarm_type, category);
+      const weight = this.getAlarmWeight(alarm.alarm_type, "DSM");
       const severity = this.getSeverity(weight);
-
-      totalPenalty += weight;
       severityCounts[severity]++;
       categoryBreakdown.DSM++;
     });
 
-    // Average score per vehicle
+    // Calculate fleet score normalized by vehicle count
     const vehicleCount = vehicleNames.length || 1;
-    const avgPenaltyPerVehicle = totalPenalty / vehicleCount;
-    const fleetScore = Math.max(0, 100 - avgPenaltyPerVehicle);
+    const score = this.calculateNormalizedScore(severityCounts, vehicleCount);
 
     return {
-      score: Math.round(fleetScore),
-      grade: this.getGrade(fleetScore),
+      score,
+      grade: this.getGrade(score),
       total_vehicles: vehicleNames.length,
       total_alarms: adasAlarms.length + dsmAlarms.length,
       category_breakdown: categoryBreakdown,
       severity_counts: severityCounts,
-      time_range: {
-        start: startTime,
-        end: endTime,
-        hours: hoursUsed, // ✅ selalu terdefinisi di dua mode
-      },
+      time_range: { start: startTime, end: endTime, hours: hoursUsed },
     };
   }
 
@@ -297,80 +283,51 @@ class SafetyScoreService {
     // Group by vehicle
     const vehicleScores = {};
 
-    // Process ADAS
-    adasAlarms.forEach((alarm) => {
+    const processAlarm = (alarm, category) => {
       const vehicleName = alarm.vehicle_name;
       if (!vehicleName || vehicleName === "Unknown") return;
 
       if (!vehicleScores[vehicleName]) {
         vehicleScores[vehicleName] = {
           vehicle_name: vehicleName,
-          penalty: 0,
           alarms: [],
           severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
           categoryBreakdown: { ADAS: 0, DSM: 0, FM: 0, BSD: 0 },
         };
       }
 
-      const category = "ADAS";
       const weight = this.getAlarmWeight(alarm.alarm_type, category);
       const severity = this.getSeverity(weight);
 
-      vehicleScores[vehicleName].penalty += weight;
       vehicleScores[vehicleName].severityCounts[severity]++;
-      vehicleScores[vehicleName].categoryBreakdown.ADAS++;
+      vehicleScores[vehicleName].categoryBreakdown[category]++;
       vehicleScores[vehicleName].alarms.push({
         type: alarm.alarm_type,
-        category: category,
+        category,
         time: alarm.event_time,
-        weight: weight,
-        severity: severity,
+        weight,
+        severity,
       });
+    };
+
+    adasAlarms.forEach((alarm) => processAlarm(alarm, "ADAS"));
+    dsmAlarms.forEach((alarm) => processAlarm(alarm, "DSM"));
+
+    // Calculate per-vehicle scores
+    const results = Object.values(vehicleScores).map((v) => {
+      const score = this.calculateNormalizedScore(v.severityCounts, 1);
+      return {
+        vehicle_name: v.vehicle_name,
+        score,
+        grade: this.getGrade(score),
+        alarm_count: v.alarms.length,
+        severity_counts: v.severityCounts,
+        category_breakdown: v.categoryBreakdown,
+        top_alarms: v.alarms.sort((a, b) => b.weight - a.weight).slice(0, 3),
+      };
     });
 
-    // Process DSM
-    dsmAlarms.forEach((alarm) => {
-      const vehicleName = alarm.vehicle_name;
-      if (!vehicleName || vehicleName === "Unknown") return;
-
-      if (!vehicleScores[vehicleName]) {
-        vehicleScores[vehicleName] = {
-          vehicle_name: vehicleName,
-          penalty: 0,
-          alarms: [],
-          severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
-          categoryBreakdown: { ADAS: 0, DSM: 0, FM: 0, BSD: 0 },
-        };
-      }
-
-      const category = "DSM";
-      const weight = this.getAlarmWeight(alarm.alarm_type, category);
-      const severity = this.getSeverity(weight);
-
-      vehicleScores[vehicleName].penalty += weight;
-      vehicleScores[vehicleName].severityCounts[severity]++;
-      vehicleScores[vehicleName].categoryBreakdown.DSM++;
-      vehicleScores[vehicleName].alarms.push({
-        type: alarm.alarm_type,
-        category: category,
-        time: alarm.event_time,
-        weight: weight,
-        severity: severity,
-      });
-    });
-
-    // Convert ke array dan hitung score
-    const results = Object.values(vehicleScores).map((v) => ({
-      vehicle_name: v.vehicle_name,
-      score: Math.max(0, Math.round(100 - v.penalty)),
-      grade: this.getGrade(100 - v.penalty),
-      alarm_count: v.alarms.length,
-      severity_counts: v.severityCounts,
-      category_breakdown: v.categoryBreakdown,
-      top_alarms: v.alarms.sort((a, b) => b.weight - a.weight).slice(0, 3), // Top 3 alarms
-    }));
-
-    // Urutkan dari paling berisiko (score terendah)
+    // Sort from riskiest (lowest score)
     results.sort((a, b) => a.score - b.score);
 
     return results.slice(0, limit);
@@ -378,10 +335,14 @@ class SafetyScoreService {
 
   // ================= GRADE & STATISTICS =================
   getGrade(score) {
-    if (score >= 90) return { letter: "A", color: "#22c55e", label: "Excellent", icon: "🏆" };
-    if (score >= 80) return { letter: "B", color: "#84cc16", label: "Good", icon: "👍" };
-    if (score >= 70) return { letter: "C", color: "#f59e0b", label: "Fair", icon: "⚠️" };
-    if (score >= 60) return { letter: "D", color: "#f97316", label: "Poor", icon: "⚡" };
+    if (score >= 90)
+      return { letter: "A", color: "#22c55e", label: "Excellent", icon: "🏆" };
+    if (score >= 80)
+      return { letter: "B", color: "#84cc16", label: "Good", icon: "👍" };
+    if (score >= 70)
+      return { letter: "C", color: "#f59e0b", label: "Fair", icon: "⚠️" };
+    if (score >= 60)
+      return { letter: "D", color: "#f97316", label: "Poor", icon: "⚡" };
     return { letter: "F", color: "#ef4444", label: "Critical", icon: "🚨" };
   }
 
@@ -390,14 +351,11 @@ class SafetyScoreService {
     const startTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
     const endTime = new Date();
 
-    const query = {
-      event_time: { $gte: startTime, $lte: endTime },
-    };
+    const query = { event_time: { $gte: startTime, $lte: endTime } };
 
     const adasAlarms = await ADAS.find(query);
     const dsmAlarms = await DSM.find(query);
 
-    // Count by alarm type
     const alarmTypeCounts = {};
 
     [...adasAlarms, ...dsmAlarms].forEach((alarm) => {
@@ -405,13 +363,15 @@ class SafetyScoreService {
       if (!alarmTypeCounts[type]) {
         alarmTypeCounts[type] = {
           count: 0,
-          weight: this.getAlarmWeight(type, getAlarmCategory(alarm.platform_alarm_id)),
+          weight: this.getAlarmWeight(
+            type,
+            getAlarmCategory(alarm.platform_alarm_id)
+          ),
         };
       }
       alarmTypeCounts[type].count++;
     });
 
-    // Sort by count
     const sorted = Object.entries(alarmTypeCounts)
       .map(([type, data]) => ({
         alarm_type: type,
