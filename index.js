@@ -211,7 +211,7 @@ app.get("/api/adas", async (req, res) => {
 
     // Filter by vehicle name
     if (vehicle && vehicle !== "all") {
-      query.vehicle_name = new RegExp(vehicle, "i");
+      query.vehicle_name = new RegExp(vehicle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     }
 
     // ✅ Filter by date range
@@ -253,7 +253,7 @@ app.get("/api/dsm", async (req, res) => {
 
     // Filter by vehicle name
     if (vehicle && vehicle !== "all") {
-      query.vehicle_name = new RegExp(vehicle, "i");
+      query.vehicle_name = new RegExp(vehicle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     }
 
     // ✅ Filter by date range
@@ -297,7 +297,7 @@ app.get("/api/adas/datatable", async (req, res) => {
 
     // Filter by vehicle
     if (vehicle && vehicle !== "all") {
-      query.vehicle_name = new RegExp(vehicle, "i");
+      query.vehicle_name = new RegExp(vehicle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     }
 
     // Filter by date range
@@ -368,7 +368,7 @@ app.get("/api/dsm/datatable", async (req, res) => {
 
     // Filter by vehicle
     if (vehicle && vehicle !== "all") {
-      query.vehicle_name = new RegExp(vehicle, "i");
+      query.vehicle_name = new RegExp(vehicle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     }
 
     // Filter by date range
@@ -437,7 +437,7 @@ app.get("/api/data-availability", async (req, res) => {
 
     let matchStage = {};
     if (vehicle && vehicle !== "all") {
-      matchStage.vehicle_name = new RegExp(vehicle, "i");
+      matchStage.vehicle_name = new RegExp(vehicle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     }
 
     // Get date range with data counts
@@ -488,7 +488,7 @@ app.get("/api/fleet-stats", async (req, res) => {
 
     // Build query filter for vehicle and date range
     if (vehicle && vehicle !== "all") {
-      matchStage.vehicle_name = new RegExp(vehicle, "i");
+      matchStage.vehicle_name = new RegExp(vehicle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     }
 
     if (startDate && endDate) {
@@ -570,7 +570,9 @@ app.get("/api/coordinates/latest", async (req, res) => {
     let query = {};
 
     if (vehicle && vehicle !== "all") {
-      query.vehicle_name = new RegExp(vehicle, "i");
+      // Escape regex special characters in vehicle name
+      const escaped = vehicle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      query.vehicle_name = new RegExp(escaped, "i");
     }
 
     // Get latest coordinate for each vehicle
