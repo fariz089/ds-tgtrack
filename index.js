@@ -517,7 +517,7 @@ app.get("/api/fleet-stats", async (req, res) => {
 app.get("/api/vehicles", async (req, res) => {
   try {
     const vehicles = await Vehicle.find({ status: "active" })
-      .select("name driver1 driver2 coDriver status")
+      .select("name display_name lpn imei driver1 driver2 coDriver status")
       .sort({ name: 1 });
 
     res.json(vehicles);
