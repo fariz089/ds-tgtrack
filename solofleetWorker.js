@@ -462,7 +462,7 @@ class SoloFleetWorker {
         const parsed = this.parseVehicleAlias(event.alias || event.vehicleid);
 
         const doc = {
-          imei: event.deviceid || this.config.defaultImei || "solofleet",
+          imei: event.deviceid || this.config.defaultImei || "088000004838",
           vehicle_name: parsed.name,
           lpn: parsed.lpn,
           alarm_type: mapping.alarm_type,
@@ -836,6 +836,16 @@ class SoloFleetWorker {
       if (oldVehicle) {
         await this.Vehicle.deleteOne({ _id: oldVehicle._id });
         console.log(`[SoloFleet] 🔄 Removed old vehicle record: ${oldVehicle.name}`);
+      }
+
+      // Fix old records with imei="solofleet" → actual device IMEI
+      const sfImeiADAS = await this.ADAS.countDocuments({ imei: "solofleet" });
+      const sfImeiDSM = await this.DSM.countDocuments({ imei: "solofleet" });
+      if (sfImeiADAS > 0 || sfImeiDSM > 0) {
+        console.log(`[SoloFleet] 🔄 Fixing IMEI: ${sfImeiADAS} ADAS + ${sfImeiDSM} DSM records with imei="solofleet"`);
+        if (sfImeiADAS > 0) await this.ADAS.updateMany({ imei: "solofleet" }, { $set: { imei: "088000004838" } });
+        if (sfImeiDSM > 0) await this.DSM.updateMany({ imei: "solofleet" }, { $set: { imei: "088000004838" } });
+        console.log(`[SoloFleet] ✅ IMEI migration completed`);
       }
     } catch (err) {
       console.error(`[SoloFleet] ⚠ Migration error (non-fatal):`, err.message);

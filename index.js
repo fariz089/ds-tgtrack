@@ -429,6 +429,57 @@ app.get("/api/dsm/datatable", async (req, res) => {
   }
 });
 
+// API: Get data availability (which dates have data for a vehicle/collection)
+app.get("/api/data-availability", async (req, res) => {
+  try {
+    const { vehicle, type = "adas" } = req.query;
+    const Model = type === "dsm" ? DSM : ADAS;
+
+    let matchStage = {};
+    if (vehicle && vehicle !== "all") {
+      matchStage.vehicle_name = new RegExp(vehicle, "i");
+    }
+
+    // Get date range with data counts
+    const availability = await Model.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: "%Y-%m-%d", date: "$event_time" }
+          },
+          count: { $sum: 1 },
+          earliest: { $min: "$event_time" },
+          latest: { $max: "$event_time" },
+        }
+      },
+      { $sort: { _id: -1 } },
+      { $limit: 365 }
+    ]);
+
+    // Also get overall date range
+    const dateRange = await Model.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: null,
+          earliest: { $min: "$event_time" },
+          latest: { $max: "$event_time" },
+          total: { $sum: 1 }
+        }
+      }
+    ]);
+
+    res.json({
+      dates: availability.map(d => ({ date: d._id, count: d.count })),
+      range: dateRange[0] || { earliest: null, latest: null, total: 0 }
+    });
+  } catch (err) {
+    console.error("Error fetching data availability:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // API: Get aggregated fleet statistics
 app.get("/api/fleet-stats", async (req, res) => {
   try {
@@ -815,8 +866,8 @@ app.get("/api/video/check/:imei/:channel", checkVideoAuth, async (req, res) => {
     const { imei, channel } = req.params;
 
     // Check if this is a SoloFleet device
-    if (sfVideoService && sfVideoService.isSoloFleetDevice(imei)) {
-      const status = sfVideoService.getStreamStatus(imei, parseInt(channel));
+    if (global.__sfVideoService && global.__sfVideoService.isSoloFleetDevice(imei)) {
+      const status = global.__sfVideoService.getStreamStatus(imei, parseInt(channel));
       return res.json({
         imei,
         channel: parseInt(channel),
@@ -940,7 +991,7 @@ app.get("/api/video/cameras/:imei", checkVideoAuth, async (req, res) => {
     const quick = req.query.quick === "true";
 
     // Check if this is a SoloFleet device
-    if (sfVideoService && sfVideoService.isSoloFleetDevice(imei)) {
+    if (global.__sfVideoService && global.__sfVideoService.isSoloFleetDevice(imei)) {
       // SoloFleet THE FLASH has 8 cameras (vid_use: 11111111)
       const cameras = Array.from({ length: 8 }, (_, i) => ({
         channel: i + 1,
@@ -988,12 +1039,12 @@ app.get("/api/video/cameras/:imei", checkVideoAuth, async (req, res) => {
 app.get("/api/video/status", checkVideoAuth, (req, res) => {
   const tgtrackStatus = videoStreamService.getStatus();
   const sfStatus =
-    sfVideoService ? sfVideoService.getAllStatus() : [];
+    global.__sfVideoService ? global.__sfVideoService.getAllStatus() : [];
 
   res.json({
     tgtrack: tgtrackStatus,
     solofleet: {
-      enabled: !!sfVideoService,
+      enabled: !!global.__sfVideoService,
       activeStreams: sfStatus,
     },
   });
@@ -1007,8 +1058,8 @@ app.get("/api/video/sf-stream/:imei/:channel", async (req, res) => {
   // If accessed via HTTP, return info
   const { imei, channel } = req.params;
 
-  if (sfVideoService && sfVideoService.isSoloFleetDevice(imei)) {
-    const status = sfVideoService.getStreamStatus(imei, parseInt(channel));
+  if (global.__sfVideoService && global.__sfVideoService.isSoloFleetDevice(imei)) {
+    const status = global.__sfVideoService.getStreamStatus(imei, parseInt(channel));
     return res.json({
       message: "Use WebSocket to connect to this endpoint",
       wsUrl: `ws://${req.headers.host}/api/video/sf-stream/${imei}/${channel}`,
@@ -1024,11 +1075,11 @@ app.post("/api/video/sf-start/:imei/:channel", async (req, res) => {
   try {
     const { imei, channel } = req.params;
 
-    if (!sfVideoService || !sfVideoService.isSoloFleetDevice(imei)) {
+    if (!global.__sfVideoService || !global.__sfVideoService.isSoloFleetDevice(imei)) {
       return res.status(404).json({ error: "Not a SoloFleet device" });
     }
 
-    const session = await sfVideoService.startStream(imei, parseInt(channel));
+    const session = await global.__sfVideoService.startStream(imei, parseInt(channel));
     res.json({
       success: true,
       deviceChannel: session.deviceChannel,
@@ -1045,11 +1096,11 @@ app.post("/api/video/sf-stop/:imei/:channel", async (req, res) => {
   try {
     const { imei, channel } = req.params;
 
-    if (!sfVideoService) {
+    if (!global.__sfVideoService) {
       return res.status(404).json({ error: "SoloFleet not enabled" });
     }
 
-    await sfVideoService.stopStream(imei, parseInt(channel));
+    await global.__sfVideoService.stopStream(imei, parseInt(channel));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1073,28 +1124,37 @@ app.get("/api/command-center/vehicles", async (req, res) => {
         try {
           const { name, imei, lpn } = vehicle;
 
+          // Build query - use IMEI first, fallback to vehicle_name for SoloFleet
+          const imeiMatch = { imei: imei, event_time: { $gte: startTime, $lte: endTime } };
+          const nameMatch = { vehicle_name: name, event_time: { $gte: startTime, $lte: endTime } };
+
+          // Quick check: does this vehicle have any alarms by IMEI?
+          let adasByImei = await ADAS.countDocuments(imeiMatch);
+          let dsmByImei = await DSM.countDocuments(imeiMatch);
+          
+          // Use vehicle_name query if IMEI returns nothing (SoloFleet case)
+          const useNameQuery = (adasByImei === 0 && dsmByImei === 0);
+          const matchQuery = useNameQuery ? { vehicle_name: name } : { imei: imei };
+          const timeMatch = { ...matchQuery, event_time: { $gte: startTime, $lte: endTime } };
+
           const [adasCount, dsmCount, adasCorrect, dsmCorrect] = await Promise.all([
+            ADAS.countDocuments(timeMatch),
+            DSM.countDocuments(timeMatch),
             ADAS.countDocuments({
-              imei: imei,
-              event_time: { $gte: startTime, $lte: endTime },
-            }),
-            DSM.countDocuments({
-              imei: imei,
-              event_time: { $gte: startTime, $lte: endTime },
-            }),
-            ADAS.countDocuments({
-              imei: imei,
-              event_time: { $gte: startTime, $lte: endTime },
+              ...timeMatch,
               validation_status: { $ne: "incorrect" },
             }),
             DSM.countDocuments({
-              imei: imei,
-              event_time: { $gte: startTime, $lte: endTime },
+              ...timeMatch,
               validation_status: { $ne: "incorrect" },
             }),
           ]);
 
-          const latestCoord = await Coordinate.findOne({ imei: imei }).sort({ event_time: -1 }).lean();
+          // Also try coordinate by vehicle_name if IMEI fails
+          let latestCoord = await Coordinate.findOne({ imei: imei }).sort({ event_time: -1 }).lean();
+          if (!latestCoord) {
+            latestCoord = await Coordinate.findOne({ vehicle_name: name }).sort({ event_time: -1 }).lean();
+          }
 
           const totalCorrectAlarms = adasCorrect + dsmCorrect;
           const score = Math.max(0, 100 - totalCorrectAlarms * 5);
@@ -1157,23 +1217,23 @@ app.get("/api/command-center/vehicle/:vehicleName", async (req, res) => {
     const endTime = new Date();
     const startTime = new Date(endTime.getTime() - 36 * 60 * 60 * 1000);
 
-    const [adasAlarms, dsmAlarms] = await Promise.all([
-      ADAS.find({
-        imei: vehicle.imei,
-        event_time: { $gte: startTime, $lte: endTime },
-      })
-        .sort({ event_time: -1 })
-        .limit(50)
-        .lean(),
+    // Query by IMEI first, then fallback to vehicle_name for SoloFleet
+    // (SoloFleet alarms may have imei="solofleet" instead of actual device IMEI)
+    const imeiQuery = { imei: vehicle.imei, event_time: { $gte: startTime, $lte: endTime } };
+    const nameQuery = { vehicle_name: vehicleName, event_time: { $gte: startTime, $lte: endTime } };
 
-      DSM.find({
-        imei: vehicle.imei,
-        event_time: { $gte: startTime, $lte: endTime },
-      })
-        .sort({ event_time: -1 })
-        .limit(50)
-        .lean(),
+    let [adasAlarms, dsmAlarms] = await Promise.all([
+      ADAS.find(imeiQuery).sort({ event_time: -1 }).limit(50).lean(),
+      DSM.find(imeiQuery).sort({ event_time: -1 }).limit(50).lean(),
     ]);
+
+    // Fallback: if no results by IMEI, try by vehicle_name
+    if (adasAlarms.length === 0 && dsmAlarms.length === 0) {
+      [adasAlarms, dsmAlarms] = await Promise.all([
+        ADAS.find(nameQuery).sort({ event_time: -1 }).limit(50).lean(),
+        DSM.find(nameQuery).sort({ event_time: -1 }).limit(50).lean(),
+      ]);
+    }
 
     res.json({
       vehicle_name: vehicleName,
@@ -1240,25 +1300,20 @@ app.get("/api/command-center/vehicle-alarms/:vehicleName", async (req, res) => {
     const endTime = new Date();
     const startTime = new Date(endTime.getTime() - 36 * 60 * 60 * 1000);
 
-    const [adasAlarms, dsmAlarms] = await Promise.all([
-      ADAS.find({
-        imei: vehicle.imei,
-        event_time: { $gte: startTime, $lte: endTime },
-        lat: { $exists: true, $ne: null },
-        lng: { $exists: true, $ne: null },
-      })
-        .select("alarm_type lat lng event_time validation_status alarm_key")
-        .lean(),
-
-      DSM.find({
-        imei: vehicle.imei,
-        event_time: { $gte: startTime, $lte: endTime },
-        lat: { $exists: true, $ne: null },
-        lng: { $exists: true, $ne: null },
-      })
-        .select("alarm_type lat lng event_time validation_status alarm_key")
-        .lean(),
+    // Try by IMEI first, fallback to vehicle_name for SoloFleet
+    const baseTimeFilter = { event_time: { $gte: startTime, $lte: endTime }, lat: { $exists: true, $ne: null }, lng: { $exists: true, $ne: null } };
+    
+    let [adasAlarms, dsmAlarms] = await Promise.all([
+      ADAS.find({ imei: vehicle.imei, ...baseTimeFilter }).select("alarm_type lat lng event_time validation_status alarm_key").lean(),
+      DSM.find({ imei: vehicle.imei, ...baseTimeFilter }).select("alarm_type lat lng event_time validation_status alarm_key").lean(),
     ]);
+
+    if (adasAlarms.length === 0 && dsmAlarms.length === 0) {
+      [adasAlarms, dsmAlarms] = await Promise.all([
+        ADAS.find({ vehicle_name: vehicleName, ...baseTimeFilter }).select("alarm_type lat lng event_time validation_status alarm_key").lean(),
+        DSM.find({ vehicle_name: vehicleName, ...baseTimeFilter }).select("alarm_type lat lng event_time validation_status alarm_key").lean(),
+      ]);
+    }
 
     res.json({
       vehicle_name: vehicleName,

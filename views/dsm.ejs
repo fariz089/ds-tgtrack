@@ -2,6 +2,7 @@
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css" />
 <link rel="stylesheet" href="/css/datatable-modern.css" />
 <link rel="stylesheet" href="/css/file-preview.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
 
 <!-- Filter Section -->
 <div class="filter-container" style="margin-bottom: 25px;">
@@ -12,7 +13,7 @@
         <label style="font-size: 13px; font-weight: 600; margin-bottom: 5px; display: block; color: #374151;">
           <i class="fas fa-truck" style="color: #f59e0b;"></i> Vehicle
         </label>
-        <select id="vehicleFilter" style="padding: 10px 14px; border: 2px solid #e5e7eb; border-radius: 6px; min-width: 220px; font-size: 14px; cursor: pointer;">
+        <select id="vehicleFilter" style="padding: 10px 14px; border: 2px solid #e5e7eb; border-radius: 6px; min-width: 220px; font-size: 14px; cursor: pointer;" onchange="onVehicleChange()">
           <option value="all">All Vehicles</option>
           <% vehicles.forEach(vehicle => { %>
             <option value="<%= vehicle %>"><%= vehicle %></option>
@@ -24,14 +25,28 @@
         <label style="font-size: 13px; font-weight: 600; margin-bottom: 5px; display: block; color: #374151;">
           <i class="fas fa-clock" style="color: #f59e0b;"></i> Time Range
         </label>
-        <select id="hoursFilter" style="padding: 10px 14px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px; cursor: pointer;">
+        <select id="hoursFilter" style="padding: 10px 14px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 14px; cursor: pointer;" onchange="onTimeRangeChange()">
           <option value="1">Last 1 Hour</option>
           <option value="3">Last 3 Hours</option>
           <option value="5">Last 5 Hours</option>
           <option value="24" selected>Last 24 Hours</option>
           <option value="72">Last 3 Days</option>
           <option value="168">Last 7 Days</option>
+          <option value="720">Last 30 Days</option>
+          <option value="custom">Custom Range</option>
         </select>
+      </div>
+
+      <!-- Custom Date Range -->
+      <div id="customDateRange" style="display: none; gap: 8px; align-items: end;">
+        <div>
+          <label style="font-size: 12px; font-weight: 600; margin-bottom: 4px; display: block; color: #6b7280;">From</label>
+          <input type="text" id="startDate" placeholder="Start date" style="padding: 10px 12px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 13px; width: 160px;" />
+        </div>
+        <div>
+          <label style="font-size: 12px; font-weight: 600; margin-bottom: 4px; display: block; color: #6b7280;">To</label>
+          <input type="text" id="endDate" placeholder="End date" style="padding: 10px 12px; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 13px; width: 160px;" />
+        </div>
       </div>
       
       <button onclick="applyFilter()" style="padding: 10px 24px; background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; box-shadow: 0 2px 8px rgba(245,158,11,0.3); transition: all 0.2s;">
@@ -46,6 +61,20 @@
         <i class="fas fa-file-excel"></i> Export
       </button>
       
+    </div>
+
+    <!-- Data Availability Bar -->
+    <div id="dataAvailability" style="margin-top: 15px; display: none;">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+        <i class="fas fa-database" style="color: #6b7280; font-size: 12px;"></i>
+        <span style="font-size: 12px; font-weight: 600; color: #6b7280;">Data Availability</span>
+        <span id="dataRangeInfo" style="font-size: 11px; color: #9ca3af;"></span>
+      </div>
+      <div id="availabilityGrid" style="display: flex; gap: 2px; flex-wrap: wrap;"></div>
+      <div style="display: flex; gap: 12px; margin-top: 6px;">
+        <span style="font-size: 11px; color: #9ca3af;"><span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:2px;"></span> Has data</span>
+        <span style="font-size: 11px; color: #9ca3af;"><span style="display:inline-block;width:10px;height:10px;background:#e5e7eb;border-radius:2px;"></span> No data</span>
+      </div>
     </div>
   </div>
 </div>
@@ -127,12 +156,71 @@
 <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
 <script src="/js/datatable-helper.js"></script>
 
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script>
   let dsmTable;
+  let startDatePicker, endDatePicker;
+  let availableDates = new Set();
 
   $(document).ready(function() {
+    startDatePicker = flatpickr('#startDate', {
+      enableTime: true, dateFormat: 'Y-m-d H:i', time_24hr: true,
+      onDayCreate: function(dObj, dStr, fp, dayElem) {
+        const dateStr = dayElem.dateObj.toISOString().split('T')[0];
+        if (availableDates.has(dateStr)) { dayElem.style.background = '#dcfce7'; dayElem.style.borderRadius = '50%'; }
+      }
+    });
+    endDatePicker = flatpickr('#endDate', {
+      enableTime: true, dateFormat: 'Y-m-d H:i', time_24hr: true, defaultDate: new Date(),
+      onDayCreate: function(dObj, dStr, fp, dayElem) {
+        const dateStr = dayElem.dateObj.toISOString().split('T')[0];
+        if (availableDates.has(dateStr)) { dayElem.style.background = '#dcfce7'; dayElem.style.borderRadius = '50%'; }
+      }
+    });
     initDataTable();
   });
+
+  function onTimeRangeChange() {
+    const val = $('#hoursFilter').val();
+    if (val === 'custom') { $('#customDateRange').css('display', 'flex'); loadDataAvailability(); }
+    else { $('#customDateRange').hide(); $('#dataAvailability').hide(); }
+  }
+
+  function onVehicleChange() {
+    if ($('#hoursFilter').val() === 'custom') loadDataAvailability();
+  }
+
+  async function loadDataAvailability() {
+    const vehicle = $('#vehicleFilter').val() || 'all';
+    try {
+      const resp = await fetch(`/api/data-availability?vehicle=${vehicle}&type=dsm`);
+      const data = await resp.json();
+      availableDates = new Set(data.dates.map(d => d.date));
+      if (startDatePicker) startDatePicker.redraw();
+      if (endDatePicker) endDatePicker.redraw();
+      const container = document.getElementById('availabilityGrid');
+      const infoEl = document.getElementById('dataRangeInfo');
+      container.innerHTML = '';
+      if (data.range.earliest) {
+        const earliest = new Date(data.range.earliest);
+        const latest = new Date(data.range.latest);
+        infoEl.textContent = `${earliest.toLocaleDateString('id-ID')} — ${latest.toLocaleDateString('id-ID')} (${data.range.total.toLocaleString()} records)`;
+        const today = new Date();
+        const dateMap = new Map(data.dates.map(d => [d.date, d.count]));
+        for (let i = 89; i >= 0; i--) {
+          const d = new Date(today); d.setDate(d.getDate() - i);
+          const dateStr = d.toISOString().split('T')[0];
+          const count = dateMap.get(dateStr) || 0;
+          const cell = document.createElement('div');
+          cell.title = `${dateStr}: ${count} events`;
+          cell.style.cssText = `width:8px;height:8px;border-radius:2px;cursor:pointer;background:${count > 0 ? (count > 50 ? '#16a34a' : count > 10 ? '#4ade80' : '#bbf7d0') : '#e5e7eb'}`;
+          cell.onclick = () => { if (count > 0) { startDatePicker.setDate(dateStr + ' 00:00'); endDatePicker.setDate(dateStr + ' 23:59'); } };
+          container.appendChild(cell);
+        }
+      } else { infoEl.textContent = 'No data found'; }
+      document.getElementById('dataAvailability').style.display = 'block';
+    } catch (err) { console.error('Error loading availability:', err); }
+  }
 
   function initDataTable() {
     if (dsmTable) {
@@ -140,7 +228,11 @@
     }
     
     const vehicle = $('#vehicleFilter').val() || 'all';
-    const hours = $('#hoursFilter').val() || 24;
+    const hoursVal = $('#hoursFilter').val();
+    const isCustom = hoursVal === 'custom';
+    const startDate = isCustom ? $('#startDate').val() : null;
+    const endDate = isCustom ? $('#endDate').val() : null;
+    const hours = isCustom ? null : hoursVal;
     
     dsmTable = $('#dsmTable').DataTable({
       processing: true,
@@ -149,7 +241,12 @@
         url: '/api/dsm/datatable',
         data: function(d) {
           d.vehicle = vehicle;
-          d.hours = hours;
+          if (isCustom && startDate && endDate) {
+            d.startDate = new Date(startDate).toISOString();
+            d.endDate = new Date(endDate).toISOString();
+          } else {
+            d.hours = hours || 24;
+          }
         }
       },
       columns: [
@@ -249,8 +346,14 @@
 
   function exportData() {
     const vehicle = $('#vehicleFilter').val() || 'all';
-    const hours = $('#hoursFilter').val() || 24;
-    window.open(`/api/dsm?vehicle=${vehicle}&hours=${hours}&limit=10000`, '_blank');
+    const hoursVal = $('#hoursFilter').val();
+    if (hoursVal === 'custom') {
+      const s = new Date($('#startDate').val()).toISOString();
+      const e = new Date($('#endDate').val()).toISOString();
+      window.open(`/api/dsm?vehicle=${vehicle}&startDate=${s}&endDate=${e}&limit=10000`, '_blank');
+    } else {
+      window.open(`/api/dsm?vehicle=${vehicle}&hours=${hoursVal}&limit=10000`, '_blank');
+    }
   }
 
   function viewAlarmFiles(alarmData) {
