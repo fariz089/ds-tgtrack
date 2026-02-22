@@ -12,7 +12,7 @@ const VideoStreamService = require("./videoStreamService");
 const { sleep, isLoggedIn, interceptAuthData } = require("./utils");
 const mongoose = require("mongoose");
 
-const { initWebSocketServer } = require("./ws-server");
+const { initWebSocketServer, getWss } = require("./ws-server");
 
 const app = express();
 
@@ -1542,12 +1542,29 @@ const server = app.listen(PORT, () => {
   console.log(`Express listening on port ${PORT}`);
 });
 
-// WebSocket upgrade handler for SoloFleet video streaming
-// Clients connect to: ws://host:PORT/api/video/sf-stream/{imei}/{channel}
+// WebSocket upgrade handler
+// Routes:
+//   /ws/copilot → Copilot alarm/GPS WebSocket
+//   /api/video/sf-stream/{imei}/{channel} → SoloFleet video WebSocket
 const sfVideoWss = new (require("ws").Server)({ noServer: true });
 
 server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
+
+  // Route 1: Copilot WebSocket
+  if (url.pathname === "/ws/copilot") {
+    const copilotWss = getWss();
+    if (copilotWss) {
+      copilotWss.handleUpgrade(request, socket, head, (ws) => {
+        copilotWss.emit("connection", ws, request);
+      });
+    } else {
+      socket.destroy();
+    }
+    return;
+  }
+
+  // Route 2: SoloFleet Video WebSocket
   const match = url.pathname.match(
     /^\/api\/video\/sf-stream\/([^/]+)\/(\d+)$/
   );
@@ -1820,7 +1837,7 @@ async function main() {
     coordinateWorker.start(10000); // Fetch coordinates every 10 seconds
 
     // Initialize websocket
-    initWebSocketServer(8008);
+    initWebSocketServer(server); // Attach to HTTP server (port 3000, path /ws/copilot)
 
     // Initialize SoloFleet worker (if enabled)
     let solofleetWorker = null;
