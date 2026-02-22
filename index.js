@@ -1593,34 +1593,10 @@ server.on("upgrade", (request, socket, head) => {
 
 // Wait until next 15-second interval (00, 15, 30, 45)
 async function waitUntilNext15Seconds() {
-  const now = new Date();
-  const currentSeconds = now.getSeconds();
-
-  let targetSeconds;
-  if (currentSeconds < 15) {
-    targetSeconds = 15;
-  } else if (currentSeconds < 30) {
-    targetSeconds = 30;
-  } else if (currentSeconds < 45) {
-    targetSeconds = 45;
-  } else {
-    targetSeconds = 60;
-  }
-
-  const nextTime = new Date(now);
-  if (targetSeconds === 60) {
-    nextTime.setMinutes(now.getMinutes() + 1);
-    nextTime.setSeconds(0);
-  } else {
-    nextTime.setSeconds(targetSeconds);
-  }
-  nextTime.setMilliseconds(0);
-
-  const waitMs = nextTime - now;
-  const waitSec = Math.floor(waitMs / 1000);
-
-  console.log(`⏰ Tunggu ${waitSec}s sampai ${nextTime.toLocaleTimeString("id-ID")} untuk cycle berikutnya...`);
-  await sleep(waitMs);
+  const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_SEC || "5") * 1000;
+  const waitSec = POLL_INTERVAL_MS / 1000;
+  console.log(`⏰ Tunggu ${waitSec}s untuk cycle berikutnya...`);
+  await sleep(POLL_INTERVAL_MS);
 }
 
 // Format date to API-compatible format with timezone
@@ -2126,9 +2102,29 @@ async function main() {
         let startTime;
 
         if (firstCycle) {
-          const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
-          startTime = new Date(endTime.getTime() - THREE_DAYS_MS);
-          console.log("🕒 MODE HISTORY: 3 hari ke belakang");
+          const historyDays = parseInt(process.env.TGTRACK_HISTORY_DAYS) || 60;
+          
+          // Check if we already have data - if so, only fetch from last stored date
+          const latestADAS = await ADAS.findOne({ alarm_key: { $not: /^sf_/ } })
+            .sort({ event_time: -1 }).lean();
+          const latestDSM = await DSM.findOne({ alarm_key: { $not: /^sf_/ } })
+            .sort({ event_time: -1 }).lean();
+          
+          const latestDate = [latestADAS?.event_time, latestDSM?.event_time]
+            .filter(Boolean)
+            .sort((a, b) => b - a)[0];
+          
+          if (latestDate) {
+            // Incremental: fetch from last stored date minus 1 hour buffer
+            startTime = new Date(latestDate.getTime() - 3600000);
+            console.log(`🕒 MODE INCREMENTAL: Fetching from ${startTime.toISOString()} (last stored + buffer)`);
+          } else {
+            // Full history: no data yet
+            const HISTORY_MS = historyDays * 24 * 60 * 60 * 1000;
+            startTime = new Date(endTime.getTime() - HISTORY_MS);
+            console.log(`🕒 MODE FULL HISTORY: ${historyDays} hari ke belakang`);
+          }
+          
           console.log("⏳ Fetching historical data... This may take several minutes...");
 
           await fetchAndProcessRange(startTime, endTime, {
