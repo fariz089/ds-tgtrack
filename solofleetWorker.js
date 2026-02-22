@@ -497,6 +497,14 @@ class SoloFleetWorker {
 
         await Model.create(doc);
         stored++;
+
+        // Broadcast to Copilot via WebSocket (same as TGTrack does)
+        try {
+          const { broadcastToCopilot } = require("./ws-server");
+          broadcastToCopilot(doc, mapping.alarm_type, category, event.speed || 0);
+        } catch (bErr) {
+          // Silent fail - copilot may not be connected
+        }
       } catch (err) {
         if (err.code === 11000) {
           skipped++; // duplicate
