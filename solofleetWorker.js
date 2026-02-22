@@ -344,11 +344,24 @@ class SoloFleetWorker {
 
   mapViolationToAlarm(event) {
     const violationType = event.violationtypestring || "";
+    const safetysource = event.safetysource || "";
+
     const mapping = this.violationMap[violationType] || {
       platform_alarm_id: 0,
       alarm_type: violationType || "Unknown SoloFleet Event",
       category: "UNKNOWN",
     };
+
+    // Override category based on safetysource from SoloFleet
+    // This ensures ADAS events go to ADAS model, DMS events to DSM model
+    if (safetysource === "adas") {
+      mapping.category = "ADAS";
+    } else if (safetysource === "dms") {
+      mapping.category = "DSM";
+    } else if (safetysource === "alarmid") {
+      mapping.category = "ADAS"; // Speed violations go to ADAS (FM category)
+    }
+
     return mapping;
   }
 
@@ -386,6 +399,41 @@ class SoloFleetWorker {
     return files;
   }
 
+  // Parse SoloFleet alias like "THE FLASH / N 7439 UG" into TGTrack-compatible format
+  parseVehicleAlias(alias) {
+    if (!alias) return { name: "Unknown", displayName: "Unknown", lpn: "Unknown" };
+
+    // Pattern: "THE FLASH / N 7439 UG" or "NAME / PLAT"
+    const parts = alias.split("/").map((s) => s.trim());
+    if (parts.length >= 2) {
+      const rawName = parts[0].trim(); // "THE FLASH"
+      const lpn = parts.slice(1).join("/").trim(); // "N 7439 UG"
+
+      // Convert name: "THE FLASH" -> "The flash" (title case like TGTrack)
+      const name = rawName
+        .split(" ")
+        .map(
+          (w, i) =>
+            i === 0
+              ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+              : w.toLowerCase()
+        )
+        .join(" ");
+
+      // Display name: "THE FLASH ( N 7439 UG )" (matches TGTrack format)
+      const displayName = `${rawName} ( ${lpn} )`;
+
+      return { name, displayName, lpn };
+    }
+
+    // Fallback: use alias as-is
+    return {
+      name: alias,
+      displayName: alias,
+      lpn: alias,
+    };
+  }
+
   async storeAlarmEvents(events) {
     let stored = 0;
     let skipped = 0;
@@ -397,21 +445,26 @@ class SoloFleetWorker {
         const alarmKey = this.generateAlarmKey(event);
         const category = mapping.category;
 
-        // Choose correct model
+        // Choose correct model based on category
+        // ADAS/FM -> ADAS model, DSM -> DSM model
         const Model =
           category === "ADAS" || category === "FM" ? this.ADAS : this.DSM;
 
-        // Check if already exists
-        const existing = await Model.findOne({ alarm_key: alarmKey });
-        if (existing) {
+        // Check if already exists in BOTH models (in case of category mismatch)
+        const existingADAS = await this.ADAS.findOne({ alarm_key: alarmKey });
+        const existingDSM = await this.DSM.findOne({ alarm_key: alarmKey });
+        if (existingADAS || existingDSM) {
           skipped++;
           continue;
         }
 
+        // Parse vehicle alias to match TGTrack naming format
+        const parsed = this.parseVehicleAlias(event.alias || event.vehicleid);
+
         const doc = {
           imei: event.deviceid || this.config.defaultImei || "solofleet",
-          vehicle_name: event.alias || event.vehicleid,
-          lpn: event.alias || event.vehicleid,
+          vehicle_name: parsed.name,
+          lpn: parsed.lpn,
           alarm_type: mapping.alarm_type,
           speed: event.speed || 0,
           event_time: new Date(event.gpstime || event.datetime),
@@ -425,7 +478,7 @@ class SoloFleetWorker {
           validated_at: event.eventverifyeditdt
             ? new Date(event.eventverifyeditdt)
             : null,
-          // Extra SoloFleet-specific metadata stored in alarm_type description
+          // Extra SoloFleet-specific metadata
           _solofleet: {
             source: "solofleet",
             messageid: event.messageid,
@@ -466,15 +519,18 @@ class SoloFleetWorker {
 
     for (const v of vehicles) {
       try {
+        const parsed = this.parseVehicleAlias(v.alias || v.vehicleid);
+        const imei = v.deviceid || `sf_${v.vehicleid}`;
+
         await this.Vehicle.findOneAndUpdate(
-          { imei: v.deviceid || `sf_${v.vehicleid}` },
+          { imei },
           {
-            name: v.alias || v.vehicleid,
-            display_name: v.alias,
-            lpn: v.vehicleid,
-            imei: v.deviceid || `sf_${v.vehicleid}`,
-            fleet_name: "SoloFleet",
-            vehicle_type: v.contracttype || "unknown",
+            name: parsed.name,
+            display_name: parsed.displayName,
+            lpn: parsed.lpn,
+            imei,
+            fleet_name: "JURAGAN99",
+            vehicle_type: "Passenger car",
             status: "active",
             driver1: v.dv_nm || "",
             driver2: v.dv_nb || "",
@@ -499,6 +555,7 @@ class SoloFleetWorker {
       try {
         const eventTime = new Date(v.lastupdated);
         const imei = v.deviceid || `sf_${v.vehicleid}`;
+        const parsed = this.parseVehicleAlias(v.alias || v.vehicleid);
 
         // Avoid storing duplicate coordinates
         const existing = await this.Coordinate.findOne({
@@ -510,7 +567,7 @@ class SoloFleetWorker {
         await this.Coordinate.create({
           imei,
           device_key: v.vehicleid,
-          vehicle_name: v.alias || v.vehicleid,
+          vehicle_name: parsed.name,
           event_time: eventTime,
           receive_time: new Date(),
           time_zone: `+0${v.tz || 7}:00`,
@@ -551,14 +608,65 @@ class SoloFleetWorker {
       `[SoloFleet] 📡 Fetching events ${startDatetime} -> ${endDatetime}`
     );
 
-    const events = await this.fetchAdasDmsEvents(startDatetime, endDatetime);
-    if (!events.length) {
+    // Source 1: ADAS + DMS events from videohistoryPerCompany
+    const adasDmsEvents = await this.fetchAdasDmsEvents(
+      startDatetime,
+      endDatetime
+    );
+    console.log(
+      `[SoloFleet] 📦 Source 1 (ADAS+DMS): ${adasDmsEvents.length} events`
+    );
+
+    // Source 2: AlarmID events (speed violations) per vehicle via getAdasEvents
+    // First get vehicle list
+    const vehicles = await this.fetchVehicleLive();
+    let alarmIdEvents = [];
+    for (const v of vehicles) {
+      const vehicleId = v.vehicleid;
+      if (!vehicleId) continue;
+
+      const perVehicle = await this.fetchAdasEventsPerVehicle(
+        vehicleId,
+        startDatetime,
+        endDatetime,
+        this.config.companyId
+      );
+
+      // Only take alarmid events (speed violations) that aren't in source 1
+      const alarmOnly = perVehicle.filter(
+        (e) => e.safetysource === "alarmid"
+      );
+      if (alarmOnly.length > 0) {
+        // Add alias from vehicle data
+        alarmOnly.forEach((e) => {
+          if (!e.alias) e.alias = v.alias;
+        });
+        alarmIdEvents = alarmIdEvents.concat(alarmOnly);
+      }
+    }
+    console.log(
+      `[SoloFleet] 📦 Source 2 (AlarmID/Speed): ${alarmIdEvents.length} events`
+    );
+
+    // Combine all events, deduplicate by messageid
+    const seenIds = new Set();
+    const allEvents = [];
+    for (const e of [...adasDmsEvents, ...alarmIdEvents]) {
+      if (!seenIds.has(e.messageid)) {
+        seenIds.add(e.messageid);
+        allEvents.push(e);
+      }
+    }
+
+    if (!allEvents.length) {
       console.log("[SoloFleet] Tidak ada events baru");
       return { stored: 0, skipped: 0, errors: 0 };
     }
 
-    console.log(`[SoloFleet] 📦 ${events.length} events diterima, storing...`);
-    const result = await this.storeAlarmEvents(events);
+    console.log(
+      `[SoloFleet] 📦 Total combined: ${allEvents.length} events, storing...`
+    );
+    const result = await this.storeAlarmEvents(allEvents);
     console.log(
       `[SoloFleet] ✅ Stored: ${result.stored}, Skipped: ${result.skipped}, Errors: ${result.errors}`
     );
