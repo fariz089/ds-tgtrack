@@ -163,6 +163,16 @@ const vehiclesData = [
     install_date: new Date("2025-04-02"),
     status: "active",
   },
+  {
+    name: "The flash",
+    display_name: "THE FLASH ( N 7439 UG )",
+    lpn: "N 7439 UG",
+    imei: "088000004838",
+    fleet_name: "JURAGAN99",
+    vehicle_type: "Passenger car",
+    install_date: new Date("2025-04-02"),
+    status: "active",
+  },
 ];
 
 async function seedVehicles() {
@@ -176,22 +186,42 @@ async function seedVehicles() {
     });
     console.log("✓ Connected to MongoDB");
 
-    const existingCount = await Vehicle.countDocuments();
-
-    if (existingCount > 0) {
-      console.log(`⚠ Database already has ${existingCount} vehicles`);
-      console.log("\nClearing existing vehicles...");
-      await Vehicle.deleteMany({});
-      console.log("✓ Cleared existing vehicles");
+    // Drop old unique index on lpn if exists (Labubu & The flash share same LPN)
+    try {
+      await Vehicle.collection.dropIndex("lpn_1");
+      console.log("✓ Dropped old unique lpn index");
+    } catch (e) {
+      // Index might not exist, ignore
     }
 
-    console.log("\nSeeding vehicles with IMEI mapping...");
-    const result = await Vehicle.insertMany(vehiclesData);
-    console.log(`✓ Successfully seeded ${result.length} vehicles`);
+    const existingCount = await Vehicle.countDocuments();
+    console.log(`ℹ Database has ${existingCount} existing vehicles`);
 
-    console.log("\nVehicles list:");
-    result.forEach((v, i) => {
-      console.log(`${i + 1}. ${v.display_name} - IMEI: ${v.imei}`);
+    // Use upsert to add/update vehicles without deleting existing ones (e.g. SoloFleet vehicles)
+    console.log("\nSeeding vehicles with IMEI mapping (upsert mode)...");
+    let upserted = 0;
+    let updated = 0;
+
+    for (const v of vehiclesData) {
+      const result = await Vehicle.findOneAndUpdate(
+        { imei: v.imei }, // Match by IMEI (unique identifier)
+        { $set: v },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      if (result.createdAt && (new Date() - result.createdAt) < 5000) {
+        upserted++;
+      } else {
+        updated++;
+      }
+    }
+
+    console.log(`✓ Seed completed: ${upserted} new, ${updated} updated`);
+
+    const allVehicles = await Vehicle.find({}).sort({ name: 1 });
+    console.log(`\nAll vehicles in database (${allVehicles.length}):`);
+    allVehicles.forEach((v, i) => {
+      console.log(`${i + 1}. ${v.display_name || v.name} - IMEI: ${v.imei}`);
     });
 
     mongoose.connection.close();

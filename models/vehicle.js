@@ -10,7 +10,6 @@ const vehicleSchema = new mongoose.Schema({
   lpn: {
     type: String,
     required: true,
-    unique: true,
   },
   imei: {
     type: String,

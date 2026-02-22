@@ -681,18 +681,49 @@ class SoloFleetWorker {
       `\n[SoloFleet] 🕒 MODE HISTORY: ${days} hari ke belakang...`
     );
 
-    const endTime = new Date();
-    const startTime = new Date(endTime.getTime() - days * 24 * 60 * 60 * 1000);
+    // Check if we already have recent SoloFleet data in DB
+    // If yes, only fetch from the last stored date instead of full 60 days
+    try {
+      const latestADAS = await this.ADAS.findOne({ alarm_key: /^sf_/ }).sort({ event_time: -1 }).lean();
+      const latestDSM = await this.DSM.findOne({ alarm_key: /^sf_/ }).sort({ event_time: -1 }).lean();
+      
+      let latestDate = null;
+      if (latestADAS) latestDate = latestADAS.event_time;
+      if (latestDSM && (!latestDate || latestDSM.event_time > latestDate)) {
+        latestDate = latestDSM.event_time;
+      }
 
-    const startStr = this.formatDatetime(startTime);
-    const endStr = this.formatDatetime(endTime);
+      const endTime = new Date();
+      let startTime;
 
-    const result = await this.fetchAndStoreAlarms(startStr, endStr);
+      if (latestDate) {
+        // Already have data — only fetch from last stored date minus 1 hour buffer
+        startTime = new Date(latestDate.getTime() - 60 * 60 * 1000);
+        const totalSfADAS = await this.ADAS.countDocuments({ alarm_key: /^sf_/ });
+        const totalSfDSM = await this.DSM.countDocuments({ alarm_key: /^sf_/ });
+        console.log(`[SoloFleet] ℹ Found ${totalSfADAS + totalSfDSM} existing SoloFleet records`);
+        console.log(`[SoloFleet] ℹ Latest data: ${latestDate.toISOString()}`);
+        console.log(`[SoloFleet] ℹ Only fetching from ${startTime.toISOString()} (incremental)`);
+      } else {
+        // No existing data — full history fetch
+        startTime = new Date(endTime.getTime() - days * 24 * 60 * 60 * 1000);
+        console.log(`[SoloFleet] ℹ No existing data, full ${days}-day fetch`);
+      }
 
-    this.historyFetched = true;
-    console.log(`[SoloFleet] ✅ HISTORY MODE COMPLETED!\n`);
+      const startStr = this.formatDatetime(startTime);
+      const endStr = this.formatDatetime(endTime);
 
-    return result;
+      const result = await this.fetchAndStoreAlarms(startStr, endStr);
+
+      this.historyFetched = true;
+      console.log(`[SoloFleet] ✅ HISTORY MODE COMPLETED!\n`);
+
+      return result;
+    } catch (err) {
+      console.error(`[SoloFleet] ❌ History fetch error:`, err.message);
+      this.historyFetched = true; // Don't retry on error
+      return { stored: 0, skipped: 0, errors: 1 };
+    }
   }
 
   async runCycle() {
@@ -741,6 +772,9 @@ class SoloFleetWorker {
 
     // Initial run
     (async () => {
+      // Step 0: Migrate old naming format in DB
+      await this.migrateOldNaming();
+
       const loggedIn = await this.login();
       if (!loggedIn) {
         console.error("[SoloFleet] ❌ Initial login failed! Will retry...");
@@ -757,6 +791,55 @@ class SoloFleetWorker {
 
     this.intervalId = setInterval(() => this.runCycle(), intervalMs);
     return this;
+  }
+
+  // Migrate old "THE FLASH / N 7439 UG" naming to "The flash" format
+  async migrateOldNaming() {
+    try {
+      const oldPatterns = [
+        { 
+          filter: { vehicle_name: /^THE FLASH \/ N 7439 UG/i },
+          update: { vehicle_name: "The flash", lpn: "N 7439 UG" }
+        }
+      ];
+
+      for (const { filter, update } of oldPatterns) {
+        const adasCount = await this.ADAS.countDocuments(filter);
+        const dsmCount = await this.DSM.countDocuments(filter);
+
+        if (adasCount > 0 || dsmCount > 0) {
+          console.log(`[SoloFleet] 🔄 Migrating old naming: ${adasCount} ADAS + ${dsmCount} DSM records`);
+          
+          if (adasCount > 0) {
+            await this.ADAS.updateMany(filter, { $set: update });
+          }
+          if (dsmCount > 0) {
+            await this.DSM.updateMany(filter, { $set: update });
+          }
+
+          // Also fix coordinates
+          const coordCount = await this.Coordinate.countDocuments({ vehicle_name: filter.vehicle_name });
+          if (coordCount > 0) {
+            await this.Coordinate.updateMany(
+              { vehicle_name: filter.vehicle_name },
+              { $set: { vehicle_name: update.vehicle_name } }
+            );
+            console.log(`[SoloFleet] 🔄 Migrated ${coordCount} coordinate records`);
+          }
+
+          console.log(`[SoloFleet] ✅ Migration completed`);
+        }
+      }
+
+      // Also fix vehicle record if it has old naming
+      const oldVehicle = await this.Vehicle.findOne({ name: /^THE FLASH/i });
+      if (oldVehicle) {
+        await this.Vehicle.deleteOne({ _id: oldVehicle._id });
+        console.log(`[SoloFleet] 🔄 Removed old vehicle record: ${oldVehicle.name}`);
+      }
+    } catch (err) {
+      console.error(`[SoloFleet] ⚠ Migration error (non-fatal):`, err.message);
+    }
   }
 
   stop() {
