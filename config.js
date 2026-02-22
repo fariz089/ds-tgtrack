@@ -59,4 +59,19 @@ module.exports = {
   },
 
   getHistory: process.env.GET_HISTORY,
+
+  solofleet: {
+    baseUrl: process.env.SOLOFLEET_URL || "https://www.solofleet.com",
+    email: process.env.SOLOFLEET_EMAIL,
+    password: process.env.SOLOFLEET_PASSWORD,
+    companyId: process.env.SOLOFLEET_COMPANY_ID || "496",
+    enabled:
+      process.env.SOLOFLEET_ENABLED === "true" ||
+      process.env.SOLOFLEET_ENABLED === true,
+    interval: parseInt(process.env.SOLOFLEET_INTERVAL) || 15000,
+    fetchHistory:
+      process.env.SOLOFLEET_HISTORY === "true" ||
+      process.env.SOLOFLEET_HISTORY === true,
+    historyDays: parseInt(process.env.SOLOFLEET_HISTORY_DAYS) || 60,
+  },
 };

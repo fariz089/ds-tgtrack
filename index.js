@@ -25,6 +25,7 @@ const HealthData = require("./models/healthData");
 const SafetyScoreService = require("./safetyScoreService");
 const CoordinateWorker = require("./coordinateWorker");
 const AlarmStoreWorker = require("./alarmStoreWorker");
+const SoloFleetWorker = require("./solofleetWorker");
 
 // Setup EJS dengan layout
 app.set("view engine", "ejs");
@@ -1386,6 +1387,102 @@ function formatTime(date) {
   )}:${pad(date.getSeconds())}+07:00`;
 }
 
+// ============================================================
+// SOLOFLEET API ENDPOINTS
+// ============================================================
+
+// API: Get SoloFleet worker status
+app.get("/api/solofleet/status", (req, res) => {
+  try {
+    // solofleetWorker is initialized inside main(), check if available globally
+    res.json({
+      enabled: config.solofleet.enabled,
+      baseUrl: config.solofleet.baseUrl,
+      message: config.solofleet.enabled
+        ? "SoloFleet worker is running"
+        : "SoloFleet is disabled",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Get combined fleet stats (TGTrack + SoloFleet)
+app.get("/api/fleet/combined-stats", async (req, res) => {
+  try {
+    const { hours = 24 } = req.query;
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+    const [adasCount, dsmCount, vehicleCount, tgtrackAlarms, solofleetAlarms] =
+      await Promise.all([
+        ADAS.countDocuments({ event_time: { $gte: since } }),
+        DSM.countDocuments({ event_time: { $gte: since } }),
+        Vehicle.countDocuments({ status: "active" }),
+        ADAS.countDocuments({
+          event_time: { $gte: since },
+          alarm_key: { $not: /^sf_/ },
+        }),
+        ADAS.countDocuments({
+          event_time: { $gte: since },
+          alarm_key: /^sf_/,
+        }).then(async (adasSf) => {
+          const dsmSf = await DSM.countDocuments({
+            event_time: { $gte: since },
+            alarm_key: /^sf_/,
+          });
+          return adasSf + dsmSf;
+        }),
+      ]);
+
+    res.json({
+      period_hours: parseInt(hours),
+      total_alarms: adasCount + dsmCount,
+      adas_alarms: adasCount,
+      dsm_alarms: dsmCount,
+      active_vehicles: vehicleCount,
+      sources: {
+        tgtrack: tgtrackAlarms,
+        solofleet: await solofleetAlarms,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Get alarms by source (tgtrack or solofleet)
+app.get("/api/alarms/by-source/:source", async (req, res) => {
+  try {
+    const { source } = req.params;
+    const { limit = 50, hours = 24 } = req.query;
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+    let query = { event_time: { $gte: since } };
+    if (source === "solofleet") {
+      query.alarm_key = /^sf_/;
+    } else if (source === "tgtrack") {
+      query.alarm_key = { $not: /^sf_/ };
+    }
+
+    const [adasAlarms, dsmAlarms] = await Promise.all([
+      ADAS.find(query).sort({ event_time: -1 }).limit(parseInt(limit)).lean(),
+      DSM.find(query).sort({ event_time: -1 }).limit(parseInt(limit)).lean(),
+    ]);
+
+    const combined = [...adasAlarms, ...dsmAlarms]
+      .sort((a, b) => new Date(b.event_time) - new Date(a.event_time))
+      .slice(0, parseInt(limit));
+
+    res.json({
+      source,
+      total: combined.length,
+      alarms: combined,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 async function main() {
   let browser;
   let page;
@@ -1505,6 +1602,23 @@ async function main() {
     // Initialize websocket
     initWebSocketServer(8008);
 
+    // Initialize SoloFleet worker (if enabled)
+    let solofleetWorker = null;
+    if (config.solofleet.enabled) {
+      solofleetWorker = new SoloFleetWorker(config.solofleet, {
+        ADAS,
+        DSM,
+        Vehicle,
+        Coordinate,
+      });
+      solofleetWorker.start(
+        config.solofleet.interval,
+        config.solofleet.fetchHistory,
+        config.solofleet.historyDays
+      );
+      console.log("✅ SoloFleet worker started");
+    }
+
     // Fetch and process alarms within time range with pagination
     async function fetchAndProcessRange(startTime, endTime, options = {}) {
       const { includeQueue = true, pageLimit = 200 } = options;
@@ -1587,6 +1701,25 @@ async function main() {
         console.log("🔄 ========================================\n");
 
         try {
+          // 1. PENTING: Stop semua workers DULU sebelum re-login
+          // Ini mencegah request dengan token expired
+          console.log("⏸️  Pausing workers before re-login...");
+          
+          if (coordinateWorker) {
+            coordinateWorker.stop();
+            console.log("  ✓ CoordinateWorker paused");
+          }
+          
+          // Pause alarm processing (jika ada method)
+          if (alarmStoreWorker && alarmStoreWorker.pause) {
+            alarmStoreWorker.pause();
+            console.log("  ✓ AlarmStoreWorker paused");
+          }
+          
+          // Tunggu sebentar untuk memastikan semua request selesai
+          await sleep(2000);
+          console.log("✓ All workers paused\n");
+
           console.log("🧹 Clearing cookies and cache...");
           const client = await page.target().createCDPSession();
           await client.send("Network.clearBrowserCookies");
@@ -1600,12 +1733,35 @@ async function main() {
           });
           console.log("✓ Storage cleared\n");
 
-          // 3. Navigate ke login page
+          // 2. Navigate ke login page dengan retry dan timeout yang lebih baik
           console.log("🔄 Navigating to login page...");
-          await page.goto(config.login.url, {
-            waitUntil: "networkidle2",
-            timeout: 30000,
-          });
+          let gotoSuccess = false;
+          let gotoAttempt = 0;
+          const MAX_GOTO_ATTEMPTS = 3;
+
+          while (!gotoSuccess && gotoAttempt < MAX_GOTO_ATTEMPTS) {
+            gotoAttempt++;
+            try {
+              console.log(`  → Attempt ${gotoAttempt}/${MAX_GOTO_ATTEMPTS}...`);
+              await page.goto(config.login.url, {
+                waitUntil: "networkidle2",
+                timeout: 60000, // Tambah timeout jadi 60 detik
+              });
+              gotoSuccess = true;
+              console.log("  ✓ Navigation successful");
+            } catch (navErr) {
+              console.log(`  ⚠ Navigation failed: ${navErr.message}`);
+              if (gotoAttempt < MAX_GOTO_ATTEMPTS) {
+                console.log(`  → Retry dalam 5 detik...`);
+                await sleep(5000);
+              }
+            }
+          }
+
+          if (!gotoSuccess) {
+            throw new Error("Failed to navigate to login page after 3 attempts");
+          }
+
           await sleep(3000);
 
           // 3. Perform login dengan retry
@@ -1642,17 +1798,26 @@ async function main() {
 
               if (coordinateWorker) {
                 coordinateWorker.updateAuth(token, organizeId);
+                // Restart coordinate worker setelah update auth
+                coordinateWorker.start();
+                console.log("  ✓ CoordinateWorker restarted");
               }
 
               if (alarmStoreWorker) {
                 alarmStoreWorker.token = token;
                 alarmStoreWorker.organizeId = organizeId;
+                // Resume alarm processing jika ada method
+                if (alarmStoreWorker.resume) {
+                  alarmStoreWorker.resume();
+                  console.log("  ✓ AlarmStoreWorker resumed");
+                }
               }
 
               // 6. Update waktu login
               lastLoginTime = Date.now();
 
               console.log("\n✅ Re-login completed successfully!");
+              console.log("▶️  All workers restarted with new token");
               console.log("⏰ Next re-login scheduled in 6 hours\n");
               console.log("🔄 ========================================\n");
             } else {
@@ -1746,6 +1911,11 @@ async function main() {
     // Stop coordinate worker saat shutdown
     if (coordinateWorker) {
       coordinateWorker.stop();
+    }
+
+    // Stop SoloFleet worker saat shutdown
+    if (solofleetWorker) {
+      solofleetWorker.stop();
     }
 
     if (browser) {
