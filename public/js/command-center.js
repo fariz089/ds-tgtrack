@@ -5,6 +5,8 @@ let selectedVehicle = null;
 let vehiclesData = [];
 let currentAlarmTab = "all";
 let flvPlayer = null;
+let sfJmuxer = null;
+let sfWebSocket = null;
 
 // ✅ Missing function
 function closeVehicleModal() {
@@ -484,14 +486,142 @@ function openCamera(imei, channel, vehicleName) {
   info.textContent = `${vehicleName} - Camera ${channel} (Loading...)`;
   modal.classList.add("active");
 
-  // Check FLV support
-  if (typeof flvjs === "undefined" || !flvjs.isSupported()) {
-    console.error("FLV.js not supported");
-    info.textContent = `${vehicleName} - Camera ${channel} (Player not supported)`;
-    return;
-  }
+  // First check if this is a SoloFleet device
+  fetch(`/api/video/check/${imei}/${channel}`)
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.source === "solofleet") {
+        // Use SoloFleet WebSocket + JMuxer
+        streamSoloFleet(imei, channel, vehicleName);
+      } else {
+        // Use TGTrack FLV
+        if (typeof flvjs === "undefined" || !flvjs.isSupported()) {
+          console.error("FLV.js not supported");
+          info.textContent = `${vehicleName} - Camera ${channel} (Player not supported)`;
+          return;
+        }
+        streamFLV(imei, channel, vehicleName);
+      }
+    })
+    .catch((err) => {
+      console.error("Camera check error:", err);
+      // Fallback to FLV
+      if (typeof flvjs !== "undefined" && flvjs.isSupported()) {
+        streamFLV(imei, channel, vehicleName);
+      }
+    });
+}
 
-  streamFLV(imei, channel, vehicleName);
+// Stream SoloFleet video via WebSocket + JMuxer
+function streamSoloFleet(imei, channel, vehicleName) {
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  // Cleanup previous
+  cleanupSoloFleetStream();
+
+  info.textContent = `${vehicleName} - Camera ${channel} (Connecting to SoloFleet...)`;
+
+  // Load JMuxer dynamically if not already loaded
+  if (typeof JMuxer === "undefined") {
+    const script = document.createElement("script");
+    script.src =
+      "https://cdn.jsdelivr.net/npm/jmuxer@2.0.5/dist/jmuxer.min.js";
+    script.onload = () => {
+      console.log("JMuxer loaded");
+      initSoloFleetStream(imei, channel, vehicleName);
+    };
+    script.onerror = () => {
+      info.textContent = `${vehicleName} - Camera ${channel} (Failed to load player)`;
+    };
+    document.head.appendChild(script);
+  } else {
+    initSoloFleetStream(imei, channel, vehicleName);
+  }
+}
+
+function initSoloFleetStream(imei, channel, vehicleName) {
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  try {
+    // Initialize JMuxer
+    sfJmuxer = new JMuxer({
+      node: "videoPlayer",
+      mode: "video",
+      flushingTime: 1000,
+      clearBuffer: true,
+      fps: 15,
+      debug: false,
+      onError: function (data) {
+        console.error("JMuxer error:", data);
+      },
+    });
+
+    // Connect WebSocket to our proxy
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/api/video/sf-stream/${imei}/${channel}`;
+    console.log("SoloFleet WS URL:", wsUrl);
+
+    sfWebSocket = new WebSocket(wsUrl);
+    sfWebSocket.binaryType = "arraybuffer";
+
+    let framesReceived = 0;
+
+    sfWebSocket.onopen = () => {
+      console.log("SoloFleet WS connected");
+      info.textContent = `${vehicleName} - Camera ${channel} (Waiting for stream...)`;
+    };
+
+    sfWebSocket.onmessage = (event) => {
+      framesReceived++;
+      const data = new Uint8Array(event.data);
+
+      sfJmuxer.feed({
+        video: data,
+      });
+
+      if (framesReceived === 1) {
+        info.textContent = `${vehicleName} - Camera ${channel} (Live - SoloFleet)`;
+        player.play().catch(() => {});
+      }
+
+      // Update frame counter periodically
+      if (framesReceived % 100 === 0) {
+        console.log(`SoloFleet stream: ${framesReceived} frames received`);
+      }
+    };
+
+    sfWebSocket.onerror = (err) => {
+      console.error("SoloFleet WS error:", err);
+      info.textContent = `${vehicleName} - Camera ${channel} (Connection Error)`;
+    };
+
+    sfWebSocket.onclose = (event) => {
+      console.log("SoloFleet WS closed:", event.code, event.reason);
+      if (framesReceived === 0) {
+        info.textContent = `${vehicleName} - Camera ${channel} (Stream Unavailable - DVR may be offline)`;
+      }
+    };
+  } catch (err) {
+    console.error("SoloFleet stream init error:", err);
+    info.textContent = `${vehicleName} - Camera ${channel} (Init Error)`;
+  }
+}
+
+function cleanupSoloFleetStream() {
+  if (sfWebSocket) {
+    try {
+      sfWebSocket.close();
+    } catch (e) {}
+    sfWebSocket = null;
+  }
+  if (sfJmuxer) {
+    try {
+      sfJmuxer.destroy();
+    } catch (e) {}
+    sfJmuxer = null;
+  }
 }
 
 // Stream FLV video
@@ -566,6 +696,9 @@ function closeVideo() {
       console.error("Error destroying player:", err);
     }
   }
+
+  // Cleanup SoloFleet stream
+  cleanupSoloFleetStream();
 
   player.pause();
   player.src = "";

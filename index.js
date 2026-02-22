@@ -26,6 +26,7 @@ const SafetyScoreService = require("./safetyScoreService");
 const CoordinateWorker = require("./coordinateWorker");
 const AlarmStoreWorker = require("./alarmStoreWorker");
 const SoloFleetWorker = require("./solofleetWorker");
+const SoloFleetVideoService = require("./solofleetVideoService");
 
 // Setup EJS dengan layout
 app.set("view engine", "ejs");
@@ -774,12 +775,27 @@ app.get("/api/video/stream-url/:imei/:channel", checkVideoAuth, async (req, res)
 app.get("/api/video/check/:imei/:channel", checkVideoAuth, async (req, res) => {
   try {
     const { imei, channel } = req.params;
+
+    // Check if this is a SoloFleet device
+    if (sfVideoService && sfVideoService.isSoloFleetDevice(imei)) {
+      const status = sfVideoService.getStreamStatus(imei, parseInt(channel));
+      return res.json({
+        imei,
+        channel: parseInt(channel),
+        available: true, // SoloFleet cameras are always "available" (on-demand)
+        is_present: true,
+        source: "solofleet",
+        streaming: status.active,
+      });
+    }
+
     const streamInfo = await videoStreamService.getStreamInfo(imei, parseInt(channel));
 
     res.json({
       imei,
       channel: parseInt(channel),
       available: streamInfo.is_present,
+      source: "tgtrack",
       ...streamInfo,
     });
   } catch (err) {
@@ -885,6 +901,25 @@ app.get("/api/video/cameras/:imei", checkVideoAuth, async (req, res) => {
     const { imei } = req.params;
     const quick = req.query.quick === "true";
 
+    // Check if this is a SoloFleet device
+    if (sfVideoService && sfVideoService.isSoloFleetDevice(imei)) {
+      // SoloFleet THE FLASH has 8 cameras (vid_use: 11111111)
+      const cameras = Array.from({ length: 8 }, (_, i) => ({
+        channel: i + 1,
+        available: true,
+        source: "solofleet",
+        name: `Camera ${i + 1}`,
+      }));
+
+      return res.json({
+        imei,
+        cameras,
+        available_count: 8,
+        mode: "solofleet",
+        source: "solofleet",
+      });
+    }
+
     if (quick) {
       // Quick mode: just return camera list
       const cameras = videoStreamService.getCameraList(imei);
@@ -913,7 +948,74 @@ app.get("/api/video/cameras/:imei", checkVideoAuth, async (req, res) => {
 
 // API: Get video service status
 app.get("/api/video/status", checkVideoAuth, (req, res) => {
-  res.json(videoStreamService.getStatus());
+  const tgtrackStatus = videoStreamService.getStatus();
+  const sfStatus =
+    sfVideoService ? sfVideoService.getAllStatus() : [];
+
+  res.json({
+    tgtrack: tgtrackStatus,
+    solofleet: {
+      enabled: !!sfVideoService,
+      activeStreams: sfStatus,
+    },
+  });
+});
+
+// API: SoloFleet video stream via WebSocket upgrade
+// Client connects to: ws://host:3000/api/video/sf-stream/{imei}/{channel}
+// Receives raw H.264 NALUs for JMuxer decoding
+app.get("/api/video/sf-stream/:imei/:channel", async (req, res) => {
+  // This endpoint is handled by the WebSocket upgrade below
+  // If accessed via HTTP, return info
+  const { imei, channel } = req.params;
+
+  if (sfVideoService && sfVideoService.isSoloFleetDevice(imei)) {
+    const status = sfVideoService.getStreamStatus(imei, parseInt(channel));
+    return res.json({
+      message: "Use WebSocket to connect to this endpoint",
+      wsUrl: `ws://${req.headers.host}/api/video/sf-stream/${imei}/${channel}`,
+      ...status,
+    });
+  }
+
+  res.status(404).json({ error: "Not a SoloFleet device" });
+});
+
+// API: SoloFleet start stream (can be called before WS connect)
+app.post("/api/video/sf-start/:imei/:channel", async (req, res) => {
+  try {
+    const { imei, channel } = req.params;
+
+    if (!sfVideoService || !sfVideoService.isSoloFleetDevice(imei)) {
+      return res.status(404).json({ error: "Not a SoloFleet device" });
+    }
+
+    const session = await sfVideoService.startStream(imei, parseInt(channel));
+    res.json({
+      success: true,
+      deviceChannel: session.deviceChannel,
+      wsUrl: `ws://${req.headers.host}/api/video/sf-stream/${imei}/${channel}`,
+      connected: session.wsConnected,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: SoloFleet stop stream
+app.post("/api/video/sf-stop/:imei/:channel", async (req, res) => {
+  try {
+    const { imei, channel } = req.params;
+
+    if (!sfVideoService) {
+      return res.status(404).json({ error: "SoloFleet not enabled" });
+    }
+
+    await sfVideoService.stopStream(imei, parseInt(channel));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // API: Get vehicle summary for Command Center (36 hours)
@@ -1343,8 +1445,57 @@ mongoose
 
 // Start Express server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Express listening on port ${PORT}`);
+});
+
+// WebSocket upgrade handler for SoloFleet video streaming
+// Clients connect to: ws://host:PORT/api/video/sf-stream/{imei}/{channel}
+const sfVideoWss = new (require("ws").Server)({ noServer: true });
+
+server.on("upgrade", (request, socket, head) => {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  const match = url.pathname.match(
+    /^\/api\/video\/sf-stream\/([^/]+)\/(\d+)$/
+  );
+
+  if (!match) {
+    socket.destroy();
+    return;
+  }
+
+  const imei = match[1];
+  const channel = parseInt(match[2]);
+
+  sfVideoWss.handleUpgrade(request, socket, head, async (ws) => {
+    // sfVideoService is set inside main() — check if available via global
+    const svc = global.__sfVideoService;
+    if (!svc || !svc.isSoloFleetDevice(imei)) {
+      ws.close(1008, "Not a SoloFleet device or service not ready");
+      return;
+    }
+
+    try {
+      console.log(
+        `[SF-Video] 🎥 WS client requesting: ${imei} ch${channel}`
+      );
+
+      // Start stream if not already active
+      const session = await svc.startStream(imei, channel);
+
+      // Add this client to receive H.264 data
+      session.addClient(ws);
+
+      ws.on("close", () => {
+        console.log(
+          `[SF-Video] 🎥 WS client disconnected: ${imei} ch${channel}`
+        );
+      });
+    } catch (err) {
+      console.error(`[SF-Video] WS error:`, err.message);
+      ws.close(1011, err.message);
+    }
+  });
 });
 
 // Wait until next 15-second interval (00, 15, 30, 45)
@@ -1604,6 +1755,7 @@ async function main() {
 
     // Initialize SoloFleet worker (if enabled)
     let solofleetWorker = null;
+    let sfVideoService = null;
     if (config.solofleet.enabled) {
       solofleetWorker = new SoloFleetWorker(config.solofleet, {
         ADAS,
@@ -1617,6 +1769,37 @@ async function main() {
         config.solofleet.historyDays
       );
       console.log("✅ SoloFleet worker started");
+
+      // Initialize SoloFleet Video Service
+      sfVideoService = new SoloFleetVideoService(solofleetWorker);
+      global.__sfVideoService = sfVideoService; // For WebSocket upgrade handler
+
+      // Register device when vehicle data comes in
+      // We do an initial fetch to register the device map
+      (async () => {
+        try {
+          await solofleetWorker.ensureLoggedIn();
+          const vehicles = await solofleetWorker.fetchVehicleLive();
+          for (const v of vehicles) {
+            if (v.deviceid) {
+              sfVideoService.registerDevice(
+                v.deviceid,
+                v.deviceid,
+                v.vehicleid
+              );
+              // Also register by imei string used in our DB
+              const imeiKey = v.deviceid.replace(/^0+/, "") || v.deviceid;
+              sfVideoService.registerDevice(imeiKey, v.deviceid, v.vehicleid);
+            }
+          }
+          console.log("✅ SoloFleet video service initialized");
+        } catch (err) {
+          console.error(
+            "⚠ SoloFleet video device registration failed:",
+            err.message
+          );
+        }
+      })();
     }
 
     // Fetch and process alarms within time range with pagination
@@ -1916,6 +2099,11 @@ async function main() {
     // Stop SoloFleet worker saat shutdown
     if (solofleetWorker) {
       solofleetWorker.stop();
+    }
+
+    // Stop SoloFleet video streams
+    if (sfVideoService) {
+      await sfVideoService.stopAll();
     }
 
     if (browser) {
