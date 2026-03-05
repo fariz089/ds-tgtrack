@@ -57,6 +57,83 @@ async function loadVehicles() {
   }
 }
 
+// Determine vehicle status based on speed, ACC state, and last update time
+// Matches ds.tgtrack.com status display: Driving, Idling, Parking, Offline
+function getVehicleStatus(vehicle) {
+  if (!vehicle.location || !vehicle.location.event_time) {
+    return { isOnline: false, statusText: 'Offline', statusClass: 'offline', timeAgo: '' };
+  }
+  
+  const lastUpdate = new Date(vehicle.location.event_time);
+  const now = new Date();
+  const minutesAgo = (now - lastUpdate) / (1000 * 60);
+  const hoursAgo = minutesAgo / 60;
+  const daysAgo = hoursAgo / 24;
+  
+  // Format time ago string
+  let timeAgo = '';
+  if (minutesAgo < 60) {
+    timeAgo = `${Math.round(minutesAgo)} minutes ago`;
+  } else if (hoursAgo < 24) {
+    timeAgo = `${Math.round(hoursAgo)} hours ago`;
+  } else if (daysAgo < 30) {
+    timeAgo = `${Math.round(daysAgo)} days ago`;
+  } else {
+    timeAgo = `${Math.round(daysAgo / 30)} months ago`;
+  }
+  
+  const speed = vehicle.location.speed || 0;
+  const accOn = vehicle.location.acc_on;
+  
+  // Offline: no data for more than 30 minutes
+  if (minutesAgo > 30) {
+    return { 
+      isOnline: false, 
+      statusText: 'Offline', 
+      statusClass: 'offline',
+      timeAgo: timeAgo
+    };
+  }
+  
+  // Driving: speed > 0 and recent data
+  if (speed > 0) {
+    return { 
+      isOnline: true, 
+      statusText: 'Driving', 
+      statusClass: 'driving',
+      speed: speed,
+      timeAgo: ''
+    };
+  }
+  
+  // Idling: ACC ON but not moving (speed = 0, recent data)
+  if (accOn && speed === 0 && minutesAgo <= 10) {
+    return { 
+      isOnline: true, 
+      statusText: 'Idling', 
+      statusClass: 'idling',
+      timeAgo: timeAgo
+    };
+  }
+  
+  // Parking: ACC OFF or speed 0 for a while
+  if (minutesAgo <= 30) {
+    return { 
+      isOnline: true, 
+      statusText: 'Parking', 
+      statusClass: 'parking',
+      timeAgo: timeAgo
+    };
+  }
+  
+  return { 
+    isOnline: false, 
+    statusText: 'Offline', 
+    statusClass: 'offline',
+    timeAgo: timeAgo
+  };
+}
+
 // Render vehicle grid
 function renderVehicleGrid() {
   const grid = document.getElementById("vehicleGrid");
@@ -65,19 +142,28 @@ function renderVehicleGrid() {
     .map((vehicle) => {
       const scoreClass = vehicle.safety_score >= 80 ? "" : vehicle.safety_score >= 60 ? "warning" : "danger";
       const isSelected = selectedVehicle === vehicle.vehicle_name;
+      const status = getVehicleStatus(vehicle);
+      
+      // Status display text with speed or time ago
+      let statusDisplay = status.statusText;
+      if (status.statusClass === 'driving' && status.speed) {
+        statusDisplay = `${status.statusText}[${status.speed} km/h]`;
+      } else if (status.timeAgo && status.statusClass !== 'driving') {
+        statusDisplay = `${status.statusText}[${status.timeAgo}]`;
+      }
 
       return `
       <div class="vehicle-card ${isSelected ? "selected" : ""}" 
            onclick="selectVehicle('${vehicle.vehicle_name}')">
         <div class="vehicle-card-header">
           <div class="vehicle-avatar">
-            <i class="fas fa-truck"></i>
+            <i class="fas fa-bus"></i>
           </div>
           <div class="vehicle-title">
             <h4>${vehicle.vehicle_name}</h4>
-            <div class="vehicle-status">
-              <span class="status-dot"></span>
-              ${vehicle.location ? "Online" : "Offline"}
+            <div class="vehicle-status ${status.statusClass}">
+              <span class="status-dot ${status.statusClass}"></span>
+              ${statusDisplay}
             </div>
           </div>
         </div>
@@ -476,6 +562,8 @@ function closeImage() {
   modal.classList.remove("active");
 }
 
+let hlsPlayer = null;
+
 function openCamera(imei, channel, vehicleName) {
   console.log(`Opening camera: ${imei}, channel ${channel}`);
 
@@ -486,15 +574,20 @@ function openCamera(imei, channel, vehicleName) {
   info.textContent = `${vehicleName} - Camera ${channel} (Loading...)`;
   modal.classList.add("active");
 
-  // First check if this is a SoloFleet device
+  // First check camera source and get stream URLs
   fetch(`/api/video/check/${imei}/${channel}`)
     .then((r) => r.json())
     .then((data) => {
+      console.log('Camera check response:', data);
+      
       if (data.source === "solofleet") {
         // Use SoloFleet WebSocket + JMuxer
         streamSoloFleet(imei, channel, vehicleName);
+      } else if (data.m3u8) {
+        // Priority 1: HLS (M3U8) - direct from CDN, fastest
+        streamHLS(data.m3u8, imei, channel, vehicleName);
       } else {
-        // Use TGTrack FLV
+        // Priority 2: FLV via proxy
         if (typeof flvjs === "undefined" || !flvjs.isSupported()) {
           console.error("FLV.js not supported");
           info.textContent = `${vehicleName} - Camera ${channel} (Player not supported)`;
@@ -510,6 +603,114 @@ function openCamera(imei, channel, vehicleName) {
         streamFLV(imei, channel, vehicleName);
       }
     });
+}
+
+// Stream HLS (M3U8) - Direct from CDN, fastest option
+function streamHLS(m3u8Url, imei, channel, vehicleName) {
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  // Cleanup previous players
+  cleanupAllPlayers();
+  
+  info.textContent = `${vehicleName} - Camera ${channel} (Connecting HLS...)`;
+
+  // Check if HLS is natively supported (Safari)
+  if (player.canPlayType('application/vnd.apple.mpegurl')) {
+    player.src = m3u8Url;
+    player.addEventListener('loadedmetadata', function onLoad() {
+      info.textContent = `${vehicleName} - Camera ${channel} (Live - HLS)`;
+      player.removeEventListener('loadedmetadata', onLoad);
+    });
+    player.addEventListener('error', function onError(e) {
+      console.error('HLS native error:', e);
+      info.textContent = `${vehicleName} - Camera ${channel} (HLS failed, trying FLV...)`;
+      streamFLV(imei, channel, vehicleName);
+      player.removeEventListener('error', onError);
+    });
+    player.play().catch(err => {
+      console.log('HLS autoplay blocked:', err);
+    });
+    return;
+  }
+
+  // Load HLS.js for Chrome/Firefox
+  if (typeof Hls === 'undefined') {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js';
+    script.onload = () => initHLSPlayer(m3u8Url, imei, channel, vehicleName);
+    script.onerror = () => {
+      info.textContent = `${vehicleName} - Camera ${channel} (HLS.js failed, trying FLV...)`;
+      streamFLV(imei, channel, vehicleName);
+    };
+    document.head.appendChild(script);
+  } else {
+    initHLSPlayer(m3u8Url, imei, channel, vehicleName);
+  }
+}
+
+function initHLSPlayer(m3u8Url, imei, channel, vehicleName) {
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  if (!Hls.isSupported()) {
+    info.textContent = `${vehicleName} - Camera ${channel} (HLS not supported, trying FLV...)`;
+    streamFLV(imei, channel, vehicleName);
+    return;
+  }
+
+  hlsPlayer = new Hls({
+    enableWorker: true,
+    lowLatencyMode: true,
+    backBufferLength: 30,
+  });
+
+  hlsPlayer.loadSource(m3u8Url);
+  hlsPlayer.attachMedia(player);
+
+  hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
+    info.textContent = `${vehicleName} - Camera ${channel} (Live - HLS)`;
+    player.play().catch(err => {
+      console.log('HLS autoplay blocked:', err);
+    });
+  });
+
+  hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
+    console.error('HLS.js error:', data);
+    if (data.fatal) {
+      info.textContent = `${vehicleName} - Camera ${channel} (HLS error, trying FLV...)`;
+      cleanupHLS();
+      streamFLV(imei, channel, vehicleName);
+    }
+  });
+}
+
+function cleanupHLS() {
+  if (hlsPlayer) {
+    try {
+      hlsPlayer.destroy();
+    } catch (e) {}
+    hlsPlayer = null;
+  }
+}
+
+function cleanupAllPlayers() {
+  // Cleanup HLS
+  cleanupHLS();
+  
+  // Cleanup FLV
+  if (flvPlayer) {
+    try {
+      flvPlayer.pause();
+      flvPlayer.unload();
+      flvPlayer.detachMediaElement();
+      flvPlayer.destroy();
+    } catch (e) {}
+    flvPlayer = null;
+  }
+  
+  // Cleanup SoloFleet
+  cleanupSoloFleetStream();
 }
 
 // Stream SoloFleet video via WebSocket + JMuxer
@@ -685,20 +886,8 @@ function closeVideo() {
   const modal = document.getElementById("videoModal");
   const player = document.getElementById("videoPlayer");
 
-  if (flvPlayer) {
-    try {
-      flvPlayer.pause();
-      flvPlayer.unload();
-      flvPlayer.detachMediaElement();
-      flvPlayer.destroy();
-      flvPlayer = null;
-    } catch (err) {
-      console.error("Error destroying player:", err);
-    }
-  }
-
-  // Cleanup SoloFleet stream
-  cleanupSoloFleetStream();
+  // Cleanup all players
+  cleanupAllPlayers();
 
   player.pause();
   player.src = "";

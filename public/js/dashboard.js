@@ -3,6 +3,8 @@
 // Global variables
 let map;
 let alarmMarkers = [];
+let busMarkers = [];
+let selectedVehicleFilter = 'all';
 
 // Filter state
 let currentFilterMode = "preset";
@@ -320,6 +322,154 @@ function initMap() {
       },
     ],
   });
+
+  // Load bus locations after map init
+  loadBusLocations();
+  
+  // Refresh bus locations every 30 seconds
+  setInterval(loadBusLocations, 30000);
+}
+
+// Load bus locations from command-center API
+async function loadBusLocations() {
+  try {
+    const response = await fetch('/api/command-center/vehicles');
+    const vehicles = await response.json();
+    
+    // Clear existing bus markers
+    busMarkers.forEach(marker => marker.setMap(null));
+    busMarkers = [];
+    
+    const showBuses = document.getElementById('toggleBusLocations')?.checked ?? true;
+    if (!showBuses) return;
+    
+    const bounds = new google.maps.LatLngBounds();
+    let hasMarkers = false;
+    
+    vehicles.forEach(vehicle => {
+      if (!vehicle.location || !vehicle.location.lat || !vehicle.location.lng) return;
+      
+      // Apply vehicle filter
+      if (selectedVehicleFilter !== 'all' && vehicle.vehicle_name !== selectedVehicleFilter) return;
+      
+      const { lat, lng, speed, event_time, acc_on } = vehicle.location;
+      
+      // Determine bus status (matching ds.tgtrack.com)
+      const now = new Date();
+      const lastUpdate = new Date(event_time);
+      const minutesAgo = (now - lastUpdate) / (1000 * 60);
+      const hoursAgo = minutesAgo / 60;
+      const daysAgo = hoursAgo / 24;
+      
+      // Format time ago
+      let timeAgo = '';
+      if (minutesAgo < 60) {
+        timeAgo = `${Math.round(minutesAgo)} min ago`;
+      } else if (hoursAgo < 24) {
+        timeAgo = `${Math.round(hoursAgo)} hours ago`;
+      } else {
+        timeAgo = `${Math.round(daysAgo)} days ago`;
+      }
+      
+      let statusColor = '#22c55e'; // Driving - green
+      let statusText = 'Driving';
+      let statusInfo = `${speed} km/h`;
+      
+      if (minutesAgo > 30) {
+        statusColor = '#9ca3af'; // Offline - gray
+        statusText = 'Offline';
+        statusInfo = timeAgo;
+      } else if (speed === 0 && acc_on) {
+        statusColor = '#f59e0b'; // Idling - yellow
+        statusText = 'Idling';
+        statusInfo = timeAgo;
+      } else if (speed === 0) {
+        statusColor = '#3b82f6'; // Parking - blue
+        statusText = 'Parking';
+        statusInfo = timeAgo;
+      }
+      
+      const marker = new google.maps.Marker({
+        position: { lat, lng },
+        map: map,
+        title: `${vehicle.vehicle_name} (${statusText})`,
+        icon: {
+          path: 'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z',
+          fillColor: statusColor,
+          fillOpacity: 1,
+          strokeColor: '#ffffff',
+          strokeWeight: 2,
+          scale: 1.5,
+          anchor: new google.maps.Point(12, 22),
+        },
+        zIndex: 2000, // Above alarm markers
+      });
+      
+      const infoContent = `
+        <div style="padding: 10px; min-width: 200px;">
+          <div style="font-weight: bold; font-size: 14px; margin-bottom: 8px; color: #0066a1;">
+            <i class="fas fa-bus" style="margin-right: 5px;"></i> ${vehicle.vehicle_name}
+          </div>
+          <div style="display: grid; gap: 5px; font-size: 12px;">
+            <div><strong>Status:</strong> <span style="color: ${statusColor}; font-weight: 600;">${statusText}[${statusInfo}]</span></div>
+            <div><strong>Nopol:</strong> ${vehicle.lpn || '-'}</div>
+            <div><strong>Safety Score:</strong> ${vehicle.safety_score}</div>
+            <div><strong>Last Update:</strong> ${lastUpdate.toLocaleString('id-ID')}</div>
+            <div style="font-size: 11px; color: #666;">
+              <i class="fas fa-map-marker-alt"></i> ${lat.toFixed(6)}, ${lng.toFixed(6)}
+            </div>
+          </div>
+          <div style="margin-top: 10px; display: flex; gap: 8px;">
+            <a href="/command-center" style="background: #0066a1; color: white; padding: 5px 10px; border-radius: 4px; text-decoration: none; font-size: 11px;">
+              <i class="fas fa-video"></i> Camera
+            </a>
+          </div>
+        </div>
+      `;
+      
+      const infoWindow = new google.maps.InfoWindow({ content: infoContent });
+      
+      marker.addListener('click', () => {
+        infoWindow.open(map, marker);
+      });
+      
+      busMarkers.push(marker);
+      bounds.extend(marker.getPosition());
+      hasMarkers = true;
+    });
+    
+    // Only fit bounds if we have bus markers and no specific filter
+    if (hasMarkers && selectedVehicleFilter !== 'all') {
+      map.fitBounds(bounds);
+      const listener = google.maps.event.addListener(map, 'idle', () => {
+        if (map.getZoom() > 15) map.setZoom(15);
+        google.maps.event.removeListener(listener);
+      });
+    }
+    
+    console.log(`✓ Loaded ${busMarkers.length} bus location markers`);
+  } catch (err) {
+    console.error('Error loading bus locations:', err);
+  }
+}
+
+// Toggle bus location visibility
+function toggleBusLocations() {
+  const show = document.getElementById('toggleBusLocations')?.checked ?? true;
+  busMarkers.forEach(marker => marker.setVisible(show));
+  
+  if (show && busMarkers.length === 0) {
+    loadBusLocations();
+  }
+}
+
+// Filter vehicles on map
+function filterVehicles() {
+  selectedVehicleFilter = document.getElementById('vehicleFilter')?.value || 'all';
+  
+  // Reload both bus locations and alarms with filter
+  loadBusLocations();
+  loadAlarmMarkers();
 }
 
 // Load alarm markers (ADAS & DSM) berdasarkan filter
@@ -332,6 +482,11 @@ async function loadAlarmMarkers() {
     // ✅ Pakai query params dari filter
     const query = buildQueryParams();
     query.append("limit", "100");
+    
+    // Add vehicle filter if selected
+    if (selectedVehicleFilter && selectedVehicleFilter !== 'all') {
+      query.append("vehicle", selectedVehicleFilter);
+    }
 
     console.log("📍 Loading alarm markers with filter:", query.toString());
 
@@ -341,8 +496,14 @@ async function loadAlarmMarkers() {
       fetch(`/api/dsm?${query}`)
     ]);
 
-    const adasAlarms = await adasResponse.json();
-    const dsmAlarms = await dsmResponse.json();
+    let adasAlarms = await adasResponse.json();
+    let dsmAlarms = await dsmResponse.json();
+    
+    // Client-side filter if API doesn't support vehicle param
+    if (selectedVehicleFilter && selectedVehicleFilter !== 'all') {
+      adasAlarms = adasAlarms.filter(a => a.vehicle_name === selectedVehicleFilter);
+      dsmAlarms = dsmAlarms.filter(a => a.vehicle_name === selectedVehicleFilter);
+    }
 
     const bounds = new google.maps.LatLngBounds();
     let hasMarkers = false;

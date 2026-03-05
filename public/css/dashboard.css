@@ -923,6 +923,39 @@ tr:hover {
   flex-shrink: 0;
 }
 
+.control-marker.bus-marker {
+  background: linear-gradient(135deg, #0066a1, #003d5c);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+/* Vehicle filter dropdown */
+.vehicle-filter {
+  margin-bottom: 12px !important;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.vehicle-filter select {
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 12px;
+  background: white;
+  cursor: pointer;
+  min-width: 120px;
+}
+
+.vehicle-filter select:focus {
+  outline: none;
+  border-color: #0066a1;
+  box-shadow: 0 0 0 2px rgba(0, 102, 161, 0.2);
+}
+
 /* Print styles */
 @media print {
   .table-actions,

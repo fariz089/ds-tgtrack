@@ -177,6 +177,25 @@
   <div style="position: relative">
     <div id="map"></div>
     <div class="map-controls">
+      <!-- Vehicle Filter -->
+      <div class="control-item vehicle-filter">
+        <label class="control-label"><i class="fas fa-bus"></i> Bus:</label>
+        <select id="vehicleFilter" onchange="filterVehicles()">
+          <option value="all">Semua Bus</option>
+          <% vehicles.forEach(function(v) { %>
+            <option value="<%= v %>"><%= v %></option>
+          <% }); %>
+        </select>
+      </div>
+      
+      <!-- Layer Toggles -->
+      <label class="control-item">
+        <input type="checkbox" id="toggleBusLocations" checked onchange="toggleBusLocations()" />
+        <span class="control-label">
+          <div class="control-marker bus-marker"><i class="fas fa-bus" style="font-size:10px;color:white;"></i></div>
+          Bus Locations
+        </span>
+      </label>
       <label class="control-item">
         <input type="checkbox" id="toggleADAS" checked onchange="toggleAlarmType('ADAS')" />
         <span class="control-label">

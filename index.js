@@ -1161,6 +1161,12 @@ app.get("/api/command-center/vehicles", async (req, res) => {
           const totalCorrectAlarms = adasCorrect + dsmCorrect;
           const score = Math.max(0, 100 - totalCorrectAlarms * 5);
 
+          // Determine ACC ON status from on_off field (1 = ON, others = OFF)
+          let accOn = false;
+          if (latestCoord && latestCoord.properties && latestCoord.properties.daily_subtotal) {
+            accOn = latestCoord.properties.daily_subtotal.on_off === 1;
+          }
+
           return {
             vehicle_name: name,
             display_name: vehicle.display_name || name,
@@ -1180,6 +1186,7 @@ app.get("/api/command-center/vehicles", async (req, res) => {
                   lng: latestCoord.lng,
                   speed: latestCoord.speed || 0,
                   event_time: latestCoord.event_time,
+                  acc_on: accOn,
                 }
               : null,
             imei: imei,

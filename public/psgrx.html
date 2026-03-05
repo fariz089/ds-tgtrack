@@ -616,6 +616,7 @@
         // ====== CAMERA STATE ======
         let cameraState = {
             flvPlayer: null,
+            hlsPlayer: null,
             sfJmuxer: null,
             sfWebSocket: null,
             isStreaming: false,
@@ -996,24 +997,133 @@
             document.getElementById('cameraChannelLabel').textContent = `Channel ${channel} • ${imei}`;
 
             try {
-                // Check camera source (TGTrack or SoloFleet)
+                // Check camera source and get stream URLs
                 const checkRes = await fetch(`${DS_TGTRACK_BASE}/api/video/check/${imei}/${channel}`);
                 const checkData = await checkRes.json();
 
+                console.log('📷 Stream info:', checkData);
+
                 if (checkData.source === 'solofleet') {
                     startSoloFleetCamera(imei, channel, busName);
-                } else {
+                } else if (checkData.m3u8) {
+                    // Priority 1: HLS (M3U8) - direct from CDN, no proxy needed
+                    startHLSCamera(checkData.m3u8, busName, channel);
+                } else if (checkData.http) {
+                    // Priority 2: FLV via proxy
                     startFLVCamera(imei, channel, busName);
+                } else {
+                    throw new Error('No stream URL available');
                 }
             } catch (err) {
                 console.error('Camera check error:', err);
-                // Fallback to FLV
+                // Fallback to FLV via proxy
                 if (typeof flvjs !== 'undefined' && flvjs.isSupported()) {
                     startFLVCamera(imei, channel, busName);
                 } else {
                     document.getElementById('cameraStatusText').textContent = 'Gagal terhubung ke kamera. Coba lagi nanti.';
                     document.getElementById('cameraStatusLabel').textContent = 'Error';
                 }
+            }
+        }
+
+        /**
+         * Stream via HLS (M3U8) - Direct from CDN, fastest option
+         * Works natively in Safari, needs HLS.js for Chrome/Firefox
+         */
+        async function startHLSCamera(m3u8Url, busName, channel) {
+            cleanupCamera();
+            
+            const player = document.getElementById('cameraPlayer');
+            document.getElementById('cameraStatusText').textContent = 'Connecting HLS stream...';
+
+            // Check if HLS is natively supported (Safari)
+            if (player.canPlayType('application/vnd.apple.mpegurl')) {
+                player.src = m3u8Url;
+                player.addEventListener('loadedmetadata', function onLoad() {
+                    cameraState.isStreaming = true;
+                    document.getElementById('cameraOverlay').classList.add('hidden');
+                    document.getElementById('cameraStatusLabel').textContent = `LIVE • ${busName} Cam ${channel} (HLS)`;
+                    document.getElementById('cameraLiveDot').classList.add('connected');
+                    player.removeEventListener('loadedmetadata', onLoad);
+                });
+                player.addEventListener('error', function onError(e) {
+                    console.error('HLS native error:', e);
+                    // Fallback to FLV
+                    document.getElementById('cameraStatusText').textContent = 'HLS failed, trying FLV...';
+                    startFLVCamera(cameraState.busImei, channel, busName);
+                    player.removeEventListener('error', onError);
+                });
+                player.play().catch(err => {
+                    console.error('HLS play error:', err);
+                    document.getElementById('cameraStatusText').textContent = 'Klik video untuk memutar';
+                });
+                return;
+            }
+
+            // Load HLS.js for Chrome/Firefox
+            if (typeof Hls === 'undefined') {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js';
+                script.onload = () => initHLSPlayer(m3u8Url, busName, channel);
+                script.onerror = () => {
+                    // Fallback to FLV
+                    document.getElementById('cameraStatusText').textContent = 'HLS.js failed, trying FLV...';
+                    startFLVCamera(cameraState.busImei, channel, busName);
+                };
+                document.head.appendChild(script);
+            } else {
+                initHLSPlayer(m3u8Url, busName, channel);
+            }
+        }
+
+        function initHLSPlayer(m3u8Url, busName, channel) {
+            const player = document.getElementById('cameraPlayer');
+
+            if (!Hls.isSupported()) {
+                // Browser doesn't support MSE, fallback to FLV
+                document.getElementById('cameraStatusText').textContent = 'HLS not supported, trying FLV...';
+                startFLVCamera(cameraState.busImei, channel, busName);
+                return;
+            }
+
+            cameraState.hlsPlayer = new Hls({
+                enableWorker: true,
+                lowLatencyMode: true,
+                backBufferLength: 30,
+            });
+
+            cameraState.hlsPlayer.loadSource(m3u8Url);
+            cameraState.hlsPlayer.attachMedia(player);
+
+            cameraState.hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
+                cameraState.isStreaming = true;
+                document.getElementById('cameraOverlay').classList.add('hidden');
+                document.getElementById('cameraStatusLabel').textContent = `LIVE • ${busName} Cam ${channel} (HLS)`;
+                document.getElementById('cameraLiveDot').classList.add('connected');
+                player.play().catch(err => {
+                    console.log('HLS autoplay blocked, user needs to click:', err);
+                    document.getElementById('cameraStatusText').textContent = 'Klik video untuk memutar';
+                    document.getElementById('cameraOverlay').classList.remove('hidden');
+                });
+            });
+
+            cameraState.hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
+                console.error('HLS.js error:', data);
+                if (data.fatal) {
+                    // Fallback to FLV on fatal error
+                    document.getElementById('cameraStatusText').textContent = 'HLS error, trying FLV...';
+                    cleanupHLS();
+                    startFLVCamera(cameraState.busImei, channel, busName);
+                }
+            });
+        }
+
+        function cleanupHLS() {
+            if (cameraState.hlsPlayer) {
+                try {
+                    cameraState.hlsPlayer.destroy();
+                } catch (e) {}
+                cameraState.hlsPlayer = null;
             }
         }
 
@@ -1155,6 +1265,14 @@
          */
         function cleanupCamera() {
             cameraState.isStreaming = false;
+
+            // Cleanup HLS player
+            if (cameraState.hlsPlayer) {
+                try {
+                    cameraState.hlsPlayer.destroy();
+                } catch (e) {}
+                cameraState.hlsPlayer = null;
+            }
 
             if (cameraState.flvPlayer) {
                 try {
