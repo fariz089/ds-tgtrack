@@ -527,14 +527,17 @@
             </div>
             <div class="modal-body">
                 <div class="field">
-                    <label for="inpName">Halo, Selamat datang</label>
-                    <input id="inpName" type="text" style="font-size: larger" readonly>
+                    <label for="inpName">Nama Penumpang</label>
+                    <input id="inpName" type="text" style="font-size: larger" placeholder="Masukkan nama anda">
                 </div>
-                <div class="hint topbar-right">tekan tombol masuk untuk melanjutkan</div>
+                <div class="hint topbar-right">Masukkan nama dan nomor tiket, lalu tekan Masuk</div>
                 <div class="modal-actions">
                     <button class="btn primary" id="btnLogin">Masuk</button>
                 </div>
-                <input id="inpTicket" style="visibility:hidden" type="text" placeholder="mis. T-20250817-XXXX" autocomplete="one-time-code" readonly>
+                <div class="field">
+                    <label for="inpTicket">Nomor Tiket</label>
+                    <input id="inpTicket" type="text" placeholder="mis. T-2603050513-IWMW8" autocomplete="one-time-code">
+                </div>
             </div>
         </div>
     </div>
@@ -599,7 +602,7 @@
         getParams();
 
         // ====== STATE ======
-        var isProd = false;
+        var isProd = true;
         var urlx = "https://localhost:44355";
         if (isProd) { urlx = "https://trans.j99t.tech"; }
 
