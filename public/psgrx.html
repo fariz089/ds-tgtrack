@@ -1,0 +1,1232 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Juragan99Trans • Passenger Dashboard</title>
+
+    <!-- Leaflet -->
+    <link rel="stylesheet"
+          href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin="">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dom-to-image-more@2.8.0/dist/dom-to-image-more.min.js"></script>
+
+    <!-- SweetAlert2 -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+    <!-- FLV.js for live camera streaming -->
+    <script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
+
+    <!-- Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        .mapboxgl-ctrl-compass {
+            display: none;
+        }
+
+        .button-group {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            flex-wrap: wrap;
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        @media (max-width: 768px) {
+            #shareCard {
+                width: 100%;
+                max-width: 420px;
+                margin: auto;
+                padding: 16px;
+                box-sizing: border-box;
+            }
+            #shareCard.story-mode {
+                width: 1080px !important;
+                height: 1920px !important;
+                padding: 60px !important;
+                background: linear-gradient(135deg,#0a0a1a,#1a1a2e) !important;
+            }
+            #shareCard.story-mode h1 { font-size: 64px !important; }
+            #shareCard.story-mode .trip-section div { font-size: 36px !important; padding: 24px !important; }
+            #shareCard.story-mode footer { font-size: 32px !important; margin-top: 40px; }
+            #shareCard {
+                background: linear-gradient(135deg,#0a0a1a,#1a1a2e) !important;
+                color: #fff !important;
+                font-family: 'Inter', sans-serif !important;
+                border: 3px solid #2563eb !important;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.8) !important;
+            }
+            #shareCard h1 { font-size: 64px !important; margin-bottom: 20px !important; text-shadow: 0 2px 10px rgba(220,38,38,0.5) !important; }
+            #shareCard img#mapImage {
+                width: 100% !important; height: 600px !important; border-radius: 25px !important;
+                object-fit: cover !important; box-shadow: 0 10px 30px rgba(0,0,0,0.6) !important; border: 2px solid #2563eb !important;
+            }
+            #shareCard .trip-section div { font-size: 18px !important; padding: 12px !important; }
+            #shareCard img#mapImage { max-height: 240px !important; border-radius: 12px; }
+        }
+
+        #shareCard h1 { font-size: 64px; margin-bottom: 20px; }
+        #shareCard .trip-section { flex: 1; display: flex; flex-direction: column; gap: 30px; justify-content: center; }
+        #shareCard img#mapImage { width: 100%; max-height: 600px; border-radius: 30px; object-fit: cover; box-shadow: 0 0 30px rgba(0,0,0,0.5); }
+
+        :root {
+            --bg: #0b0b0c;
+            --card: #121214;
+            --muted: #8e9096;
+            --text: #f5f6f8;
+            --accent: #c91f1f;
+            --accent-2: #f5c451;
+            --ok: #1db954;
+            --warn: #ffb020;
+            --danger: #ff4d4f;
+            --chip: #1a1a1c;
+            --border: #232326;
+            --shadow: 0 10px 30px rgba(0,0,0,.35);
+        }
+
+        * { box-sizing: border-box }
+        html, body { height: 100% }
+        body {
+            margin: 0;
+            font-family: Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial;
+            color: var(--text);
+            background: linear-gradient(180deg,#0a0a0b 0%, #0f0f11 100%);
+        }
+
+        header {
+            position: sticky; top: 0; z-index: 50;
+            backdrop-filter: saturate(130%) blur(8px);
+            background: rgba(10,10,11,.6);
+            border-bottom: 1px solid var(--border)
+        }
+
+        .nav { max-width: 1200px; margin: auto; padding: 14px 20px; display: flex; align-items: center; gap: 16px; justify-content: space-between }
+        .brand { display: flex; align-items: center; gap: 12px }
+        .logo { height: 42px; border-radius: 12px; overflow: hidden; display: block }
+        .logo img { width: 100%; height: 100%; object-fit: contain; display: block; background: transparent }
+
+        .badge {
+            display: inline-flex; align-items: center; gap: 8px;
+            background: var(--chip); border: 1px solid var(--border);
+            padding: 6px 10px; border-radius: 999px; color: var(--muted); font-size: 12px
+        }
+
+        .actions { display: flex; gap: 10px; flex-wrap: wrap }
+
+        .btn.share { background: #dc2626; color: #fff; }
+        .btn.refresh { background: #2563eb; color: #fff; }
+        .btn.call { background: #b91c1c; color: #fff; }
+
+        button.btn {
+            flex: 1; max-width: 120px; padding: 8px 10px; font-size: 14px;
+            border-radius: 8px; border: none; cursor: pointer; font-weight: 600; text-align: center;
+        }
+        .btn.primary { background: linear-gradient(145deg,var(--accent),#7c1313); color: #fff }
+        .btn.ghost { background: var(--chip); color: var(--text); border: 1px solid var(--border) }
+        .btn:disabled { opacity: .6; cursor: not-allowed }
+        .btn:hover { filter: brightness(1.05) }
+        .btn:active { transform: translateY(1px) }
+
+        .container { max-width: 1200px; margin: auto; padding: 20px }
+        .hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 14px 0 8px; flex-wrap: wrap }
+        .hero h1 { font-size: 28px; margin: -19px 0px 15px 0px }
+
+        .meta { display: flex; flex-direction: column; gap: 12px; }
+        .meta .kv { display: flex; flex-direction: column; background: #222; color: #fff; border-radius: 12px; padding: 14px 16px; }
+        .meta .kv .k { font-size: 14px; color: #aaa; }
+        .meta .kv .v { font-size: 18px; font-weight: 600; margin-top: 4px; }
+
+        .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+        .card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 18px; box-shadow: var(--shadow);
+            width: 100%; max-width: 100%; margin-bottom: 16px;
+        }
+        .card .head {
+            padding: 16px 18px; border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: space-between; gap: 12px
+        }
+        .card .body { padding: 14px 18px 18px }
+        .title { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 10px }
+
+        #map { height: 520px; border-bottom-left-radius: 18px; border-bottom-right-radius: 18px }
+
+        .list { display: flex; flex-direction: column; gap: 10px }
+        .row {
+            display: grid; grid-template-columns: 22px 1fr auto; gap: 12px; align-items: center;
+            padding: 10px 12px; background: var(--chip); border: 1px solid var(--border); border-radius: 12px
+        }
+        .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 4px rgba(245,196,81,.15) }
+        .dot.rm { background: var(--accent) }
+        .row .name { font-weight: 700 }
+        .row .sub { font-size: 12px; color: var(--muted) }
+        .eta { font-weight: 700 }
+        .badge.soft { background: transparent; border: 1px dashed var(--border); color: var(--muted) }
+
+        .table { width: 100%; border-collapse: collapse; font-size: 14px }
+        .table th, .table td { padding: 10px 8px; border-bottom: 1px dashed var(--border) }
+        .table th { color: var(--muted); font-weight: 600; text-align: left }
+        .footnote { color: var(--muted); font-size: 12px }
+
+        /* Modal login */
+        .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 80 }
+        .modal { width: 100%; max-width: 420px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow) }
+        .modal .modal-head { padding: 16px 18px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center }
+        .modal .modal-body { padding: 16px 18px 18px }
+        .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px }
+        .field label { font-size: 12px; color: var(--muted) }
+        .field input { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--chip); color: var(--text); outline: none }
+        .field input:focus { border-color: #2d2d31 }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px }
+        .hint { font-size: 12px; color: var(--muted) }
+
+        @media (max-width: 980px) {
+            .grid { grid-template-columns: 1fr }
+            #map { height: 420px }
+            .meta { grid-template-columns: repeat(2,minmax(0,1fr)) }
+        }
+        @media (max-width: 560px) {
+            .meta { grid-template-columns: 1fr }
+        }
+
+        /* Social Media Modal Styles */
+        .modal-overlay {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8); z-index: 9999; justify-content: center; align-items: center; backdrop-filter: blur(5px);
+        }
+        .modal-overlay.show { display: flex; }
+        .modal-content {
+            background: #1a1a1a; border-radius: 20px; padding: 30px; max-width: 400px; width: 90%;
+            text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        .modal-title { color: #fff; margin: 0 0 20px 0; font-size: 24px; font-weight: 600; }
+        .screenshot-preview { margin-bottom: 20px; border-radius: 15px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+        .screenshot-preview img { width: 100%; height: auto; }
+        .social-buttons-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
+        .social-btn {
+            border: none; padding: 15px; border-radius: 12px; font-size: 16px; font-weight: 600;
+            cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; color: #fff; transition: all 0.3s ease;
+        }
+        .social-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+        .facebook-btn { background: #1877f2; }
+        .instagram-btn { background: linear-gradient(45deg, #f09433 0%,#e6683c 25%,#dc2743 50%,#cc2366 75%,#bc1888 100%); visibility: hidden; }
+        .tiktok-btn { background: #000; visibility: hidden; }
+        .threads-btn { background: #000; }
+        .download-btn {
+            background: #333; color: #fff; border: none; padding: 15px; border-radius: 12px;
+            font-size: 16px; font-weight: 600; cursor: pointer; width: 100%; margin-bottom: 15px; transition: all 0.3s ease;
+        }
+        .download-btn:hover { background: #444; transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+        .close-btn {
+            background: #555; color: #fff; border: none; padding: 12px; border-radius: 10px;
+            font-size: 14px; cursor: pointer; width: 100%; transition: all 0.3s ease;
+        }
+        .close-btn:hover { background: #666; transform: translateY(-2px); }
+
+        @media (max-width: 768px) {
+            .modal-content { margin: 10px; padding: 20px; max-width: 95%; width: 95%; }
+            .social-buttons-grid { grid-template-columns: 1fr; gap: 10px; }
+            .modal-title { font-size: 20px !important; margin-bottom: 15px !important; }
+            .social-btn, .download-btn, .close-btn { padding: 12px !important; font-size: 14px !important; }
+        }
+        @media (max-width: 480px) {
+            .modal-content { margin: 5px; padding: 15px; max-width: 98%; width: 98%; }
+        }
+
+        /* Info section styles */
+        .trip-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 6px 0 14px; }
+        .trip-top .page-title { font-size: 24px; margin: 0; letter-spacing: .2px; }
+        .greeting { font-weight: 800; font-size: 16px; color: var(--text); text-align: right; }
+        .greeting span { color: var(--accent-2); }
+        @media (max-width: 560px) {
+            .trip-top .page-title { font-size: 20px; }
+            .greeting { font-size: 14px; }
+        }
+        .info-card .body { padding-top: 16px; }
+        .info-rows { display: flex; flex-direction: column; gap: 10px; }
+        .info-row {
+            display: grid; grid-template-columns: 1fr; gap: 6px;
+            padding: 12px 12px; background: var(--chip); border: 1px solid var(--border); border-radius: 12px;
+        }
+        .info-row .k { font-size: 12px; color: var(--muted); letter-spacing: .2px; }
+        .info-row .v { font-size: 16px; font-weight: 700; line-height: 1.25; }
+
+        /* Header style */
+        header { position: sticky; top: 0; z-index: 50; backdrop-filter: blur(10px); background: rgba(10,10,11,.65); border-bottom: 1px solid var(--border); }
+        .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; max-width: 1200px; margin: 0 auto; }
+        .topbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+        .topbar .logo { display: flex; align-items: center; gap: 12px; padding: 6px 10px; border-radius: 14px; border: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.03); }
+        .topbar .logo img { height: 34px; width: auto; display: block; }
+        .topbar .brand { display: flex; flex-direction: column; line-height: 1.1; min-width: 0; }
+        .topbar .brand b { font-size: 15px; letter-spacing: .2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .topbar .brand small { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+        .pill {
+            display: inline-flex; align-items: center; gap: 8px; padding: 8px 10px;
+            border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,.04);
+            color: var(--muted); font-size: 12px; max-width: 100%;
+        }
+        .pill b { color: var(--text); font-weight: 800; }
+        @media (max-width: 520px) {
+            .topbar { padding: 12px 14px; }
+            .topbar .brand small { display: none; }
+            .topbar .logo img { height: 30px; }
+        }
+
+        /* Action section */
+        .action-card .body { padding: 12px; }
+        .action-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: flex-start; }
+        .action-btn {
+            display: inline-flex; align-items: center; gap: 10px; padding: 10px 12px;
+            border-radius: 14px; border: 1px solid var(--border); background: var(--chip);
+            color: var(--text); cursor: pointer; user-select: none; text-decoration: none;
+            box-shadow: var(--shadow); transition: transform .1s ease, filter .2s ease, opacity .2s ease;
+        }
+        .action-btn:hover { filter: brightness(1.05); }
+        .action-btn:active { transform: scale(.98); }
+        .action-btn[disabled] { opacity: .55; cursor: not-allowed; box-shadow: none; }
+        .action-btn .i {
+            width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center;
+            background: rgba(245,196,81,.12); border: 1px solid rgba(245,196,81,.25); flex: 0 0 auto;
+        }
+        .action-btn .t { display: flex; flex-direction: column; line-height: 1.15; text-align: left; }
+        .action-btn .t b { font-size: 14px; font-weight: 800; }
+        .action-btn .t small { font-size: 11px; color: var(--muted); margin-top: 2px; }
+        @media (max-width: 520px) {
+            .action-btn { width: 100%; justify-content: flex-start; }
+        }
+
+        /* ===== LIVE CAMERA STYLES ===== */
+        .camera-section {
+            margin-top: 0;
+        }
+        .camera-container {
+            position: relative;
+            width: 100%;
+            background: #000;
+            border-radius: 14px;
+            overflow: hidden;
+            aspect-ratio: 16/9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .camera-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+        }
+        .camera-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,.65);
+            color: var(--muted);
+            gap: 12px;
+            transition: opacity .3s ease;
+        }
+        .camera-overlay.hidden { opacity: 0; pointer-events: none; }
+        .camera-overlay svg { opacity: .5; }
+        .camera-overlay .cam-text { font-size: 13px; font-weight: 600; }
+
+        .camera-status-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            font-size: 12px;
+            color: var(--muted);
+            border-top: 1px solid var(--border);
+        }
+        .camera-status-bar .live-dot {
+            display: inline-block;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--danger);
+            margin-right: 6px;
+            animation: pulse-live 1.5s ease-in-out infinite;
+        }
+        .camera-status-bar .live-dot.connected { background: var(--ok); }
+        @keyframes pulse-live {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .4; }
+        }
+        .camera-close-btn {
+            appearance: none;
+            border: 1px solid var(--border);
+            background: var(--chip);
+            color: var(--muted);
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .camera-close-btn:hover { color: var(--text); border-color: var(--danger); }
+
+        /* Camera button accent */
+        .action-btn.camera-action .i {
+            background: rgba(201,31,31,.12);
+            border-color: rgba(201,31,31,.30);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="topbar">
+            <div class="topbar-left">
+                <div class="logo" aria-label="Juragan99Trans">
+                    <img src="https://trans.j99t.tech/logogold.png" alt="Juragan99Trans Logo" referrerpolicy="no-referrer">
+                </div>
+            </div>
+            <div class="topbar-right">
+                <div class="pill" id="greetingPill">Halo, <b id="greetingName">—</b></div>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+
+        <section class="card action-card" aria-label="Aksi">
+            <div class="body">
+                <div class="action-row">
+                    <button class="action-btn" id="callCrewBtn" type="button" disabled aria-label="Panggil crew">
+                        <span class="i" aria-hidden="true">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.08 4.18 2 2 0 0 1 4.06 2h3a2 2 0 0 1 2 1.72c.12.86.32 1.7.59 2.5a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.58-1.11a2 2 0 0 1 2.11-.45c.8.27 1.64.47 2.5.59A2 2 0 0 1 22 16.92Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                        </span>
+                        <span class="t"><b>Bantuan Crew</b><small>Panggil crew bus</small></span>
+                    </button>
+
+                    <!-- LIVE CAMERA BUTTON -->
+                    <button class="action-btn camera-action" id="liveCameraBtn" type="button" disabled aria-label="Live Camera">
+                        <span class="i" aria-hidden="true">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                                <path d="M23 7l-7 5 7 5V7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </span>
+                        <span class="t"><b>Live Camera</b><small>Lihat kamera depan bus</small></span>
+                    </button>
+
+                    <button class="action-btn" id="shareBtn" type="button" disabled aria-label="Share">
+                        <span class="i" aria-hidden="true">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                                <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                                <path d="M16 6l-4-4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                                <path d="M12 2v13" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                            </svg>
+                        </span>
+                        <span class="t"><b>Share</b><small>Bagikan pengalaman perjalanan anda dengan juragan99trans</small></span>
+                    </button>
+
+                    <button class="action-btn" id="refreshBtn" type="button" aria-label="Refresh">
+                        <span class="i" aria-hidden="true">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                                <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                                <path d="M21 3v6h-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                        </span>
+                        <span class="t"><b>Refresh</b><small>Perbarui data & posisi</small></span>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- LIVE CAMERA SECTION (hidden by default, shown when user clicks Live Camera) -->
+        <section class="card camera-section" id="cameraCard" style="display:none;">
+            <div class="head">
+                <div class="title">📹 Live Camera — <span id="cameraBusLabel">Bus</span></div>
+                <button class="camera-close-btn" id="closeCameraBtn" title="Tutup kamera">✕ Tutup</button>
+            </div>
+            <div class="camera-container" id="cameraContainer">
+                <video id="cameraPlayer" playsinline muted></video>
+                <div class="camera-overlay" id="cameraOverlay">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
+                        <path d="M23 7l-7 5 7 5V7z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <rect x="1" y="5" width="15" height="14" rx="2" ry="2" stroke="currentColor" stroke-width="1.5"/>
+                    </svg>
+                    <span class="cam-text" id="cameraStatusText">Menghubungkan ke kamera...</span>
+                </div>
+            </div>
+            <div class="camera-status-bar">
+                <span><span class="live-dot" id="cameraLiveDot"></span> <span id="cameraStatusLabel">Connecting...</span></span>
+                <span id="cameraChannelLabel">Channel 1</span>
+            </div>
+        </section>
+
+        <section class="trip-page">
+            <article class="card info-card">
+                <div class="head">
+                    <div class="info-rows">
+                        <div class="info-row">
+                            <div class="k">Lokasi anda saat ini</div>
+                            <div class="v" id="wherenow2">—</div>
+                        </div>
+                        <div class="info-row">
+                            <div class="k">Info Armada | Seat</div>
+                            <div class="v" id="seatInfo">—</div>
+                        </div>
+                        <div class="info-row">
+                            <div class="k">Lokasi titik turun dan jadwal tiba</div>
+                            <div class="v" id="arriveETA">—</div>
+                        </div>
+                        <div class="info-row">
+                            <div class="k">Estimasi tiba</div>
+                            <div class="v" id="wherenow">—</div>
+                        </div>
+                    </div>
+                </div>
+            </article>
+
+            <section class="grid">
+                <article class="card" style="overflow:hidden">
+                    <div class="head">
+                        <div class="title">🗺️ Maps dan rute</div>
+                    </div>
+                    <div id="map"></div>
+                </article>
+
+                <aside class="card" style="display:none">
+                    <div class="head">
+                        <div class="title">📍 Stop-point</div>
+                    </div>
+                    <div class="body">
+                        <div class="list" id="segments"></div>
+                        <div style="margin-top:16px; display:none">
+                            <table class="table" id="tableETA">
+                                <thead><tr><th>Seq</th><th>Nama Titik</th><th>Jenis</th><th>ETA</th><th>Jarak</th></tr></thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                        <div class="footnote" style="margin-top:10px; display:none">
+                            Keterangan: "RM" = Rumah Makan/Rest Area. ETA dihitung dari <span id="gpsTimeNote">—</span>.
+                        </div>
+                    </div>
+                </aside>
+            </section>
+        </section>
+    </main>
+
+    <!-- Modal Login -->
+    <div class="modal-backdrop" id="loginModal">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+            <div class="modal-head">
+                <div class="title" id="loginTitle">🔐 Informasi perjalanan</div>
+            </div>
+            <div class="modal-body">
+                <div class="field">
+                    <label for="inpName">Halo, Selamat datang</label>
+                    <input id="inpName" type="text" style="font-size: larger" readonly>
+                </div>
+                <div class="hint topbar-right">tekan tombol masuk untuk melanjutkan</div>
+                <div class="modal-actions">
+                    <button class="btn primary" id="btnLogin">Masuk</button>
+                </div>
+                <input id="inpTicket" style="visibility:hidden" type="text" placeholder="mis. T-20250817-XXXX" autocomplete="one-time-code" readonly>
+            </div>
+        </div>
+    </div>
+
+    <!-- Share Card (hidden, for screenshot) -->
+    <div id="shareCard" style="display:none;width:1080px;height:1920px;background:linear-gradient(135deg,#0a0a1a,#1a1a2e);color:#fff;font-family:'Inter',sans-serif;padding:60px 40px;border-radius:40px;flex-direction:column;justify-content:space-between;">
+        <div style="display:flex;justify-content:center;align-items:center;margin-bottom:40px;">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:20px;">
+                <img src="j99TransWhite.png" alt="Juragan99Trans Logo" style="width:800px;height:auto;filter:drop-shadow(0 10px 30px rgba(220,38,38,0.4));margin-top:100px;" referrerpolicy="no-referrer" />
+            </div>
+        </div>
+        <div style="flex:1;display:flex;align-items:center;justify-content:center;margin:20px 0;">
+            <div style="position:relative;width:100%;height:600px;background:#1a1a2e;border-radius:30px;overflow:hidden;border:3px solid #2563eb;">
+                <img id="mapImage" style="width:100%;height:100%;object-fit:cover;border-radius:25px;" alt="Route Map" />
+                <div style="position:absolute;top:20px;right:20px;background:#2563eb;color:#fff;padding:15px 20px;border-radius:15px;font-size:24px;font-weight:600;text-align:center;">
+                    <div id="routeTime">6 hr 16 min</div>
+                    <div style="font-size:18px;opacity:0.9;">Tolls ?</div>
+                </div>
+            </div>
+        </div>
+        <div style="margin-top:40px;">
+            <div style="margin-bottom:20px;font-size:48px;color:#e5e7eb;">
+                <span id="passengerName">-</span> • <span id="tripDate">-</span>
+            </div>
+            <div style="font-size:48px;font-weight:800;margin-bottom:15px;display:flex;align-items:center;gap:15px;">
+                <span id="startCity">-</span> <span style="color:#3b82f6;">🚌</span> <span id="endCity">-</span>
+            </div>
+            <div style="font-size:48px;color:#9ca3af;margin-bottom:25px;"><span id="tripDistance">-</span></div>
+            <div style="background:#1f2937;padding:20px;border-radius:20px;border:2px solid #374151;">
+                <div style="display:flex;align-items:center;gap:15px;font-size:48px;">
+                    <span style="font-size:32px;">🚌</span>
+                    <span>Trip with: <span id="crewName">-</span> • <span id="seatClass">-</span></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Social Media Sharing Modal -->
+    <div id="shareModal" class="modal-overlay">
+        <div class="modal-content">
+            <div id="screenshotPreview" class="screenshot-preview">
+                <img id="previewImage" alt="Screenshot Preview" />
+            </div>
+            <button id="downloadBtn" class="download-btn">📥 Bagikan</button>
+            <button id="closeShareModal" class="close-btn">✕ Close</button>
+        </div>
+    </div>
+
+    <script>
+        // ====== URL PARAMS AUTO-LOGIN ======
+        function getParams() {
+            const params = new URLSearchParams(window.location.search);
+            const name = params.get("name");
+            const ticket = params.get("ticket");
+            if (name && ticket) {
+                const user = { name, ticket };
+                localStorage.setItem("autoUser", JSON.stringify(user));
+                document.getElementById('inpName').value = name;
+                document.getElementById('inpTicket').value = ticket;
+            }
+        }
+        getParams();
+
+        // ====== STATE ======
+        var isProd = false;
+        var urlx = "https://localhost:44355";
+        if (isProd) { urlx = "https://trans.j99t.tech"; }
+
+        // DS-TGTrack backend base URL (for camera API)
+        // Kosong = relative path, karena psgrx sudah satu server dengan ds-tgtrack
+        const DS_TGTRACK_BASE = "";
+
+        let state = { tokenx: null, ticket: null, data: null, map: null, layerGroup: null, routeLine: null };
+        let globalPayload = null;
+
+        // ====== CAMERA STATE ======
+        let cameraState = {
+            flvPlayer: null,
+            sfJmuxer: null,
+            sfWebSocket: null,
+            isStreaming: false,
+            busImei: null,
+            busName: null
+        };
+
+        // ====== HELPERS ======
+        const fmtDateTime = (iso) => { try { return new Date(iso).toLocaleString('id-ID', { weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit' }); } catch { return '—'; } };
+        const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString('id-ID', { weekday:'short',day:'2-digit',month:'short',year:'numeric' }); } catch { return '—'; } };
+
+        function updateShareCard(gpsData, passenger, turunDi) {
+            document.getElementById("passengerName").textContent = passenger.name;
+            const tripDate = new Date().toLocaleDateString('id-ID', { day:'2-digit',month:'long',year:'numeric' });
+            document.getElementById("tripDate").textContent = tripDate;
+            const routeParts = (passenger.trip_route || passenger.trip || 'Malang - Jakarta').split('-');
+            document.getElementById("startCity").textContent = (routeParts[0] || 'Malang').trim();
+            document.getElementById("endCity").textContent = (routeParts[1] || 'Jakarta').trim();
+            document.getElementById("tripDistance").textContent = `${passenger.distance || '1,028'} Km`;
+            document.getElementById("crewName").textContent = passenger.bus;
+            document.getElementById("seatClass").textContent = `${passenger.seat} • ${passenger.type}`;
+            const etaTime = calculateRouteTime(gpsData, turunDi);
+            document.getElementById("routeTime").textContent = etaTime;
+            captureMapScreenshot(gpsData, turunDi);
+        }
+
+        function calculateRouteTime(gpsData, turunDi) {
+            try {
+                if (state.data && state.data.estimatePOint) {
+                    const totalSeconds = state.data.estimatePOint.reduce((sum, p) => sum + (p._etatime || 0), 0);
+                    return `${Math.floor(totalSeconds/3600)} hr ${Math.floor((totalSeconds%3600)/60)} min`;
+                }
+            } catch (e) {}
+            return '6 hr 16 min';
+        }
+
+        async function captureMapScreenshot(gpsData, turunDi) {
+            try {
+                if (state.map) {
+                    await new Promise(r => setTimeout(r, 1500));
+                    const mapEl = document.getElementById('map');
+                    if (mapEl) {
+                        const canvas = await html2canvas(mapEl, { backgroundColor:'#1a1a2e', scale:2, useCORS:true, allowTaint:true, logging:false });
+                        document.getElementById("mapImage").src = canvas.toDataURL('image/png');
+                        window.shareCanvas = canvas;
+                    }
+                }
+            } catch (e) { console.log('Map screenshot error:', e); }
+        }
+
+        const fmtKm = m => (m/1000).toFixed(1) + ' km';
+        const fmtDur = s => { const sec = Math.max(0,Math.round(s)); const h = Math.floor(sec/3600); const m = Math.floor((sec%3600)/60); return (h>0?h+'j ':'')+m+'m'; };
+        const addSeconds = (iso, seconds) => new Date(new Date(iso).getTime() + seconds * 1000);
+        function cumulativeSecondsToTarget(points, targetName) {
+            let sum = 0;
+            for (const p of points) { sum += (p._etatime||0); if (p.name.toLowerCase() === targetName.toLowerCase()) break; }
+            return sum;
+        }
+        function showLogin(open = true) { document.getElementById('loginModal').style.display = open ? 'flex' : 'none'; }
+        function setBusy(el, busy) {
+            if (!el) return; el.disabled = !!busy; el.dataset.busy = busy?'1':'';
+            if (busy) { el._oldText = el.textContent; el.textContent = '⏳ Memproses...'; } else if (el._oldText) { el.textContent = el._oldText; }
+        }
+        function enableActions(en = true) {
+            document.getElementById('shareBtn').disabled = !en;
+            document.getElementById('callCrewBtn').disabled = !en;
+            document.getElementById('liveCameraBtn').disabled = !en;
+        }
+
+        function formatPickup(pickuppoint, berangkatIso) {
+            try {
+                const lokasi = pickuppoint.split("|")[0].trim();
+                const d = new Date(berangkatIso);
+                const hari = d.toLocaleDateString('id-ID',{weekday:'short'});
+                const tgl = d.toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'});
+                const jam = d.toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'});
+                return `${lokasi} • ${hari}, ${tgl} • ${jam} WIB`;
+            } catch { return pickuppoint; }
+        }
+
+        // ====== RENDER ======
+        function renderAll(payload) {
+            state.data = payload;
+            const p = payload.passanger2, g = payload.gpsData, t = payload.turunDi;
+
+            document.getElementById('greetingName').textContent = p.name || '—';
+            document.getElementById('greetingPill').style.display = 'inline-flex';
+            document.getElementById('seatInfo').textContent = `${p.bus} • ${p.seat} • ${p.type}`;
+
+            const cumToDrop = cumulativeSecondsToTarget(payload.estimatePOint, payload.turunDi.name);
+            const etaDrop = addSeconds(g.gps_time, cumToDrop);
+            document.getElementById('arriveETA').textContent = formatPickup(p.droppoint, p.tiba);
+            document.getElementById('wherenow2').textContent = g.addr;
+
+            const list = document.getElementById('segments');
+            list.innerHTML = '';
+            payload.estimatePOint.reduce((cum, pt) => {
+                const nextCum = cum + (pt._etatime || 0);
+                const isRM = /^rm\s/i.test(pt.name.trim());
+                const row = document.createElement('div');
+                row.className = 'row';
+                row.innerHTML = `<div class="dot ${isRM?'rm':''}"></div><div><div class="name">${pt.name}</div><div class="sub">${pt._desc||''}</div></div><div class="eta"></div>`;
+                list.appendChild(row);
+                return nextCum;
+            }, 0);
+
+            renderMap(payload);
+            enableActions(true);
+        }
+
+        async function renderMap(payload) {
+            const g = payload.gpsData;
+            if (state.map) { state.map.remove(); state.map = null; }
+
+            state.map = L.map('map', { zoomControl: true, scrollWheelZoom: true }).setView([g.lat, g.lon], 12);
+            L.tileLayer('https://api.mapbox.com/styles/v1/{id}/tiles/{z}/{x}/{y}?access_token=pk.eyJ1IjoiZnVuYzAyMDciLCJhIjoiY21pNWpuOHU1MjFwNTJscXozYzE4ZXFuZCJ9.7BF3vfhDCeXnHN309ElPwg', {
+                attribution: '© Mapbox © OpenStreetMap', tileSize: 512, zoomOffset: -1, maxZoom: 22, id: 'mapbox/dark-v11'
+            }).addTo(state.map);
+
+            state.layerGroup = L.layerGroup().addTo(state.map);
+
+            const vehicleIcon = L.divIcon({ className: '', html: `<div style="transform:rotate(${g.direction}deg);font-size:22px;">🚍</div>` });
+            L.marker([g.lat, g.lon], { icon: vehicleIcon }).addTo(state.layerGroup).bindPopup(`<b>Bus</b><br/>${g.addr}<br/>Kecepatan: ${g.speed} km/j`);
+
+            const currentIcon = L.divIcon({ className: '', html: `<div style="width:16px;height:16px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 6px rgba(29,185,84,.2);border:2px solid #0c2516"></div>` });
+            L.marker([g.lat, g.lon], { icon: currentIcon }).addTo(state.layerGroup);
+
+            const rmIcon = L.divIcon({ className: '', html: `<div style="width:14px;height:14px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 6px rgba(201,31,31,.2)"></div>` });
+            const dropIcon = L.divIcon({ className: '', html: `<div style="width:14px;height:14px;border-radius:50%;background:var(--accent-2);box-shadow:0 0 0 6px rgba(245,196,81,.18)"></div>` });
+
+            payload.estimatePOint.forEach(p => {
+                const isRM = /^rm\s/i.test(p.name.trim());
+                const isDrop = p.name.toLowerCase() === payload.turunDi.name.toLowerCase();
+                const icon = isDrop ? dropIcon : (isRM ? rmIcon : undefined);
+                if (icon) { L.marker([p.lat, p.lon], { icon }).addTo(state.layerGroup).bindTooltip(p.name, { direction:'top' }); }
+                else { L.marker([p.lat, p.lon]).addTo(state.layerGroup).bindTooltip(p.name, { direction:'top' }); }
+            });
+
+            try {
+                const start = [g.lon, g.lat];
+                const end = [payload.turunDi.lon, payload.turunDi.lat];
+                const waypoints = payload.estimatePOint.filter(p => p.name.toLowerCase() !== payload.turunDi.name.toLowerCase()).map(p => [p.lon, p.lat]);
+                const coords = [start, ...waypoints, end].map(c => c.join(",")).join(";");
+                const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coords}?geometries=geojson&overview=full&steps=true&access_token=pk.eyJ1IjoiZnVuYzAyMDciLCJhIjoiY21pNWpuOHU1MjFwNTJscXozYzE4ZXFuZCJ9.7BF3vfhDCeXnHN309ElPwg`;
+                const res = await fetch(url);
+                const data = await res.json();
+
+                if (data.routes && data.routes.length > 0) {
+                    const route = data.routes[0];
+                    const line = route.geometry.coordinates.map(c => [c[1], c[0]]);
+                    if (state.routeLine) state.map.removeLayer(state.routeLine);
+                    state.routeLine = L.polyline(line, { color: "blue", weight: 5, opacity: 0.8 }).addTo(state.layerGroup);
+                    state.map.fitBounds(state.routeLine.getBounds(), { padding: [30, 30] });
+
+                    const durasi = route.duration;
+                    const jarak = route.distance;
+                    const arriveTimeX = new Date(Date.now() + durasi * 1000);
+                    document.getElementById('arriveETA').textContent = ` ${payload.turunDi._desc} • ${fmtDate(payload.passanger2.tiba)} • ${arriveTimeX.toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})} WIB`;
+                    document.getElementById('wherenow').textContent = `${(jarak/1000).toFixed(1)} km lagi • ${formatDuration(durasi)}`;
+                }
+            } catch (err) { console.error("Gagal ambil rute:", err); }
+
+            state.map.setView([g.lat, g.lon], state.map.getZoom(), { animate: true });
+        }
+
+        function formatDuration(seconds) {
+            const totalMinutes = Math.round(seconds / 60);
+            const jam = Math.floor(totalMinutes / 60);
+            const menit = totalMinutes % 60;
+            return jam > 0 ? `${jam} jam ${menit} menit` : `${menit} menit`;
+        }
+
+        // ====== API CALLS ======
+        async function authenticateAndLoad(name, ticket) {
+            const urlAuth = `${urlx}/api/PassangerBoard/AuthenticatePassanger?name=${encodeURIComponent(name)}&ticket=${encodeURIComponent(ticket)}`;
+            const btnLogin = document.getElementById('btnLogin');
+            setBusy(btnLogin, true);
+            try {
+                const resp = await fetch(urlAuth, { method: 'POST' });
+                if (!resp.ok) { const t = await resp.text(); throw new Error(t || `Auth gagal (HTTP ${resp.status})`); }
+                let tokenx = (await resp.text() || '').trim();
+                try { const maybe = JSON.parse(tokenx); if (maybe && typeof maybe === 'object') tokenx = maybe.token || maybe.Token || tokenx; } catch {}
+                if (!tokenx) throw new Error('Token kosong dari server.');
+
+                state.tokenx = tokenx; state.ticket = ticket;
+
+                const urlDetail = `${urlx}/api/passangerboard/getdetail?ticket=${encodeURIComponent(ticket)}&tokenx=${encodeURIComponent(tokenx)}`;
+                const dResp = await fetch(urlDetail);
+                if (!dResp.ok) { const t2 = await dResp.text(); throw new Error(t2 || `Gagal ambil detail (HTTP ${dResp.status})`); }
+                globalPayload = await dResp.json();
+                if (!globalPayload || !globalPayload.passanger2 || !globalPayload.gpsData) throw new Error('Struktur payload tidak sesuai.');
+                state.ticket = ticket;
+                state.token = tokenx;
+
+                updateShareCard(globalPayload.gpsData, globalPayload.passanger2, globalPayload.turunDi);
+                renderAll(globalPayload);
+                showLogin(false);
+
+                // Resolve bus IMEI for camera
+                resolveBusImei(globalPayload.passanger2.bus);
+
+            } catch (err) {
+                let errorMessage = 'Terjadi kesalahan';
+                try { errorMessage = err.message.split('"')[3] || err.message; } catch { errorMessage = err.message; }
+                if (errorMessage && errorMessage.includes('Diluar jadwal keberangkatan')) {
+                    errorMessage = 'Jadwal perjalanan sesuai tiket : ' + ticket + ' telah selesai. Terima kasih sudah melakukan perjalanan dengan Juragan99Trans.';
+                }
+                Swal.fire({ icon:'warning', title:'Login Gagal', text:errorMessage, confirmButtonText:'OK' });
+            } finally { setBusy(btnLogin, false); }
+        }
+
+        // ====================================================================
+        // =================== LIVE CAMERA FUNCTIONALITY =====================
+        // ====================================================================
+
+        /**
+         * Resolve bus name → IMEI via ds-tgtrack API
+         * Bus name dari passenger board (mis: "TAKESHI") → cari di /api/vehicles
+         */
+        async function resolveBusImei(busName) {
+            if (!busName) return;
+            cameraState.busName = busName;
+
+            try {
+                // Coba cari exact match dulu
+                const res = await fetch(`${DS_TGTRACK_BASE}/api/vehicles/${encodeURIComponent(busName)}`);
+                if (res.ok) {
+                    const vehicle = await res.json();
+                    if (vehicle && vehicle.imei) {
+                        cameraState.busImei = vehicle.imei;
+                        console.log(`📷 Bus "${busName}" → IMEI: ${vehicle.imei}`);
+                        return;
+                    }
+                }
+
+                // Fallback: cari dari list semua vehicles
+                const listRes = await fetch(`${DS_TGTRACK_BASE}/api/vehicles`);
+                if (listRes.ok) {
+                    const vehicles = await listRes.json();
+                    const match = vehicles.find(v =>
+                        v.name.toLowerCase().includes(busName.toLowerCase()) ||
+                        busName.toLowerCase().includes(v.name.toLowerCase()) ||
+                        (v.display_name && v.display_name.toLowerCase().includes(busName.toLowerCase()))
+                    );
+                    if (match) {
+                        cameraState.busImei = match.imei;
+                        console.log(`📷 Bus "${busName}" → IMEI: ${match.imei} (fuzzy match: ${match.name})`);
+                        return;
+                    }
+                }
+
+                console.warn(`📷 Bus "${busName}" IMEI not found in ds-tgtrack`);
+            } catch (err) {
+                console.warn(`📷 Could not resolve IMEI for "${busName}":`, err.message);
+            }
+        }
+
+        /**
+         * Open live camera stream
+         */
+        async function openLiveCamera() {
+            const busName = cameraState.busName || (globalPayload && globalPayload.passanger2.bus);
+            const imei = cameraState.busImei;
+
+            if (!busName) {
+                Swal.fire({ icon:'info', title:'Belum login', text:'Silakan login terlebih dahulu untuk melihat kamera bus.', confirmButtonText:'OK' });
+                return;
+            }
+
+            // Show camera section
+            const cameraCard = document.getElementById('cameraCard');
+            cameraCard.style.display = '';
+            cameraCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            document.getElementById('cameraBusLabel').textContent = busName;
+            document.getElementById('cameraStatusText').textContent = 'Menghubungkan ke kamera...';
+            document.getElementById('cameraStatusLabel').textContent = 'Connecting...';
+            document.getElementById('cameraLiveDot').classList.remove('connected');
+            document.getElementById('cameraOverlay').classList.remove('hidden');
+
+            if (!imei) {
+                document.getElementById('cameraStatusText').textContent = 'IMEI bus tidak ditemukan. Kamera tidak tersedia.';
+                document.getElementById('cameraStatusLabel').textContent = 'Unavailable';
+                return;
+            }
+
+            const channel = 1; // Channel depan
+            document.getElementById('cameraChannelLabel').textContent = `Channel ${channel} • ${imei}`;
+
+            try {
+                // Check camera source (TGTrack or SoloFleet)
+                const checkRes = await fetch(`${DS_TGTRACK_BASE}/api/video/check/${imei}/${channel}`);
+                const checkData = await checkRes.json();
+
+                if (checkData.source === 'solofleet') {
+                    startSoloFleetCamera(imei, channel, busName);
+                } else {
+                    startFLVCamera(imei, channel, busName);
+                }
+            } catch (err) {
+                console.error('Camera check error:', err);
+                // Fallback to FLV
+                if (typeof flvjs !== 'undefined' && flvjs.isSupported()) {
+                    startFLVCamera(imei, channel, busName);
+                } else {
+                    document.getElementById('cameraStatusText').textContent = 'Gagal terhubung ke kamera. Coba lagi nanti.';
+                    document.getElementById('cameraStatusLabel').textContent = 'Error';
+                }
+            }
+        }
+
+        /**
+         * Stream via FLV.js (TGTrack devices)
+         */
+        function startFLVCamera(imei, channel, busName) {
+            cleanupCamera();
+
+            if (typeof flvjs === 'undefined' || !flvjs.isSupported()) {
+                document.getElementById('cameraStatusText').textContent = 'Browser tidak mendukung live streaming. Gunakan Chrome/Edge.';
+                document.getElementById('cameraStatusLabel').textContent = 'Not Supported';
+                return;
+            }
+
+            const player = document.getElementById('cameraPlayer');
+            const streamUrl = `${DS_TGTRACK_BASE}/api/video/stream/${imei}/${channel}`;
+
+            document.getElementById('cameraStatusText').textContent = 'Connecting FLV stream...';
+
+            try {
+                cameraState.flvPlayer = flvjs.createPlayer({
+                    type: 'flv',
+                    url: streamUrl,
+                    isLive: true,
+                    hasAudio: false,
+                    cors: true,
+                });
+
+                cameraState.flvPlayer.attachMediaElement(player);
+                cameraState.flvPlayer.load();
+
+                cameraState.flvPlayer.on(flvjs.Events.ERROR, (errorType, errorDetail) => {
+                    console.error('FLV Error:', errorType, errorDetail);
+                    document.getElementById('cameraStatusText').textContent = `Error: ${errorDetail}`;
+                    document.getElementById('cameraStatusLabel').textContent = 'Error';
+                    document.getElementById('cameraLiveDot').classList.remove('connected');
+                });
+
+                cameraState.flvPlayer.play().then(() => {
+                    cameraState.isStreaming = true;
+                    document.getElementById('cameraOverlay').classList.add('hidden');
+                    document.getElementById('cameraStatusLabel').textContent = `LIVE • ${busName} Cam ${channel}`;
+                    document.getElementById('cameraLiveDot').classList.add('connected');
+                }).catch(err => {
+                    console.error('Play error:', err);
+                    document.getElementById('cameraStatusText').textContent = 'Kamera tidak bisa diputar. Perangkat mungkin offline.';
+                    document.getElementById('cameraStatusLabel').textContent = 'Playback Error';
+                });
+            } catch (err) {
+                console.error('FLV init error:', err);
+                document.getElementById('cameraStatusText').textContent = 'Gagal menginisialisasi kamera.';
+                document.getElementById('cameraStatusLabel').textContent = 'Init Error';
+            }
+        }
+
+        /**
+         * Stream via WebSocket + JMuxer (SoloFleet devices)
+         */
+        function startSoloFleetCamera(imei, channel, busName) {
+            cleanupCamera();
+
+            document.getElementById('cameraStatusText').textContent = 'Connecting SoloFleet stream...';
+
+            // Load JMuxer dynamically
+            if (typeof JMuxer === 'undefined') {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/jmuxer@2.0.5/dist/jmuxer.min.js';
+                script.onload = () => initSoloFleetCamera(imei, channel, busName);
+                script.onerror = () => {
+                    document.getElementById('cameraStatusText').textContent = 'Gagal memuat player JMuxer.';
+                    document.getElementById('cameraStatusLabel').textContent = 'Load Error';
+                };
+                document.head.appendChild(script);
+            } else {
+                initSoloFleetCamera(imei, channel, busName);
+            }
+        }
+
+        function initSoloFleetCamera(imei, channel, busName) {
+            const player = document.getElementById('cameraPlayer');
+
+            try {
+                cameraState.sfJmuxer = new JMuxer({
+                    node: 'cameraPlayer',
+                    mode: 'video',
+                    flushingTime: 1000,
+                    clearBuffer: true,
+                    fps: 15,
+                    debug: false,
+                });
+
+                const protocol = DS_TGTRACK_BASE.startsWith('https') ? 'wss:' : 'ws:';
+                const host = DS_TGTRACK_BASE.replace(/^https?:\/\//, '');
+                const wsUrl = `${protocol}//${host}/api/video/sf-stream/${imei}/${channel}`;
+
+                cameraState.sfWebSocket = new WebSocket(wsUrl);
+                cameraState.sfWebSocket.binaryType = 'arraybuffer';
+                let framesReceived = 0;
+
+                cameraState.sfWebSocket.onopen = () => {
+                    document.getElementById('cameraStatusText').textContent = 'Waiting for video data...';
+                    document.getElementById('cameraStatusLabel').textContent = 'Connected, waiting...';
+                };
+
+                cameraState.sfWebSocket.onmessage = (event) => {
+                    framesReceived++;
+                    cameraState.sfJmuxer.feed({ video: new Uint8Array(event.data) });
+
+                    if (framesReceived === 1) {
+                        cameraState.isStreaming = true;
+                        document.getElementById('cameraOverlay').classList.add('hidden');
+                        document.getElementById('cameraStatusLabel').textContent = `LIVE • ${busName} Cam ${channel} (SoloFleet)`;
+                        document.getElementById('cameraLiveDot').classList.add('connected');
+                        player.play().catch(() => {});
+                    }
+                };
+
+                cameraState.sfWebSocket.onerror = () => {
+                    document.getElementById('cameraStatusText').textContent = 'WebSocket connection error.';
+                    document.getElementById('cameraStatusLabel').textContent = 'Connection Error';
+                };
+
+                cameraState.sfWebSocket.onclose = (event) => {
+                    if (framesReceived === 0) {
+                        document.getElementById('cameraStatusText').textContent = 'Stream tidak tersedia. DVR mungkin offline.';
+                        document.getElementById('cameraStatusLabel').textContent = 'Unavailable';
+                    }
+                };
+            } catch (err) {
+                console.error('SoloFleet init error:', err);
+                document.getElementById('cameraStatusText').textContent = 'Gagal menginisialisasi stream.';
+                document.getElementById('cameraStatusLabel').textContent = 'Init Error';
+            }
+        }
+
+        /**
+         * Cleanup all camera resources
+         */
+        function cleanupCamera() {
+            cameraState.isStreaming = false;
+
+            if (cameraState.flvPlayer) {
+                try {
+                    cameraState.flvPlayer.pause();
+                    cameraState.flvPlayer.unload();
+                    cameraState.flvPlayer.detachMediaElement();
+                    cameraState.flvPlayer.destroy();
+                } catch (e) {}
+                cameraState.flvPlayer = null;
+            }
+
+            if (cameraState.sfWebSocket) {
+                try { cameraState.sfWebSocket.close(); } catch (e) {}
+                cameraState.sfWebSocket = null;
+            }
+
+            if (cameraState.sfJmuxer) {
+                try { cameraState.sfJmuxer.destroy(); } catch (e) {}
+                cameraState.sfJmuxer = null;
+            }
+
+            const player = document.getElementById('cameraPlayer');
+            if (player) { player.pause(); player.src = ''; }
+        }
+
+        /**
+         * Close camera section
+         */
+        function closeLiveCamera() {
+            cleanupCamera();
+            document.getElementById('cameraCard').style.display = 'none';
+            document.getElementById('cameraOverlay').classList.remove('hidden');
+            document.getElementById('cameraLiveDot').classList.remove('connected');
+        }
+
+        // Camera button events
+        document.getElementById('liveCameraBtn').addEventListener('click', openLiveCamera);
+        document.getElementById('closeCameraBtn').addEventListener('click', closeLiveCamera);
+
+        // ====== SHARE FUNCTIONALITY ======
+        document.getElementById("shareBtn").addEventListener("click", async () => {
+            const modalContent = document.querySelector(".modal-overlay");
+            const previewImage = document.getElementById("previewImage");
+            previewImage.style.display = "none";
+
+            let iframe = document.getElementById("screenshotIframe");
+            if (!iframe) {
+                iframe = document.createElement("iframe");
+                iframe.id = "screenshotIframe";
+                iframe.style.width = "100%";
+                iframe.style.height = "80vh";
+                iframe.style.border = "none";
+                iframe.style.borderRadius = "10px";
+                previewImage.parentNode.insertBefore(iframe, previewImage.nextSibling);
+            } else {
+                iframe.style.display = "block";
+            }
+
+            const urlParams = new URLSearchParams();
+            urlParams.append('name', globalPayload.passanger2.name);
+            urlParams.append('berangkat', globalPayload.passanger2.berangkat);
+            urlParams.append('tiba', globalPayload.passanger2.tiba);
+            urlParams.append('bus', globalPayload.passanger2.bus);
+            urlParams.append('type', globalPayload.passanger2.type);
+            urlParams.append('seat', globalPayload.passanger2.seat);
+            urlParams.append('route', globalPayload.passanger2.trip_route);
+            urlParams.append('pickup', globalPayload.passanger2.pickuppoint);
+            urlParams.append('dropoff', globalPayload.passanger2.droppoint);
+
+            if (globalPayload.estimatePOint && globalPayload.estimatePOint.length > 0) {
+                const fp = globalPayload.estimatePOint[0];
+                const lp = globalPayload.estimatePOint[globalPayload.estimatePOint.length - 1];
+                urlParams.append('startLat', fp.lat); urlParams.append('startLon', fp.lon);
+                urlParams.append('endLat', lp.lat); urlParams.append('endLon', lp.lon);
+            }
+
+            iframe.src = `screenshot.html?${urlParams.toString()}&t=${Date.now()}`;
+            modalContent.classList.add("show");
+        });
+
+        document.getElementById("downloadBtn").addEventListener("click", async function downloadImage() {
+            try {
+                const iframe = document.getElementById('screenshotIframe');
+                if (!iframe) return;
+                if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {
+                    await captureIframeContent(iframe);
+                } else {
+                    iframe.onload = async () => { await captureIframeContent(iframe); };
+                }
+            } catch (error) { console.error('Download error:', error); alert('Gagal download gambar.'); }
+        });
+
+        async function captureIframeContent(iframe) {
+            await new Promise(r => setTimeout(r, 2000));
+            const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+            const canvas = await html2canvas(iframeDoc.body, { backgroundColor:'#0a0a1a', scale:2, useCORS:true, allowTaint:true, logging:false, width:iframeDoc.body.scrollWidth, height:iframeDoc.body.scrollHeight });
+            const link = document.createElement('a');
+            link.href = canvas.toDataURL('image/png');
+            link.download = 'juragan99-trip-card.png';
+            link.click();
+        }
+
+        document.getElementById("closeShareModal").addEventListener("click", () => { document.querySelector(".modal-overlay").classList.remove("show"); });
+        document.querySelector(".modal-overlay").addEventListener("click", (e) => { if (e.target.classList.contains("modal-overlay")) e.target.classList.remove("show"); });
+
+        // ====== CALL CREW ======
+        document.getElementById('callCrewBtn').addEventListener('click', async () => {
+            if (!state.data) { Swal.fire({icon:'warning',title:'Peringatan',text:'Silakan login terlebih dahulu.',confirmButtonText:'OK'}); return; }
+
+            const confirm = await Swal.fire({ title:'Konfirmasi Panggilan Crew', text:'Apakah Anda yakin ingin memanggil crew untuk bantuan?', icon:'question', showCancelButton:true, confirmButtonColor:'#3085d6', cancelButtonColor:'#d33', confirmButtonText:'Ya, Panggil Crew', cancelButtonText:'Batal' });
+            if (!confirm.isConfirmed) return;
+
+            const rawPhone = (state.data?.crew?.phone_no || '').toString().trim();
+            const normalizeMsisdn = (hp) => { if (!hp) return ''; let x = hp.replace(/\s|-/g,''); if (x.startsWith('+')) x = x.substring(1); if (x.startsWith('0')) x = '62' + x.substring(1); return x; };
+            const msisdn = normalizeMsisdn(rawPhone);
+            const passengerName = state.data?.passanger2?.name || '';
+            const seat = state.data?.passanger2?.seat || '';
+
+            if (!msisdn) { Swal.fire({icon:'error',title:'Gagal',text:'Nomor HP crew tidak tersedia.',confirmButtonText:'OK'}); return; }
+
+            try {
+                Swal.fire({title:'Menghubungi crew...',text:'Mohon tunggu sebentar',allowOutsideClick:false,didOpen:()=>Swal.showLoading()});
+                const response = await fetch(`${urlx}/api/PassangerBoard/senwa`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({msisdn,passengerName,seat}) });
+                if (!response.ok) throw new Error(await response.text() || 'Request gagal');
+                Swal.fire({icon:'success',title:'Berhasil!',text:'Terima kasih, kami akan segera membantu anda',confirmButtonText:'OK'});
+            } catch (err) {
+                Swal.fire({icon:'error',title:'Gagal',text:'Gagal menghubungi crew',confirmButtonText:'OK'});
+            }
+        });
+
+        // ====== MODAL WIRING ======
+        const btnLogin = document.getElementById('btnLogin');
+        const inpName = document.getElementById('inpName');
+        const inpTicket = document.getElementById('inpTicket');
+
+        btnLogin.addEventListener('click', () => {
+            const name = inpName.value.trim();
+            const ticket = inpTicket.value.trim();
+            if (!name || !ticket) { Swal.fire({icon:'warning',title:'Gagal',text:'Nama dan Nomor Tiket wajib diisi.',confirmButtonText:'OK'}); return; }
+            authenticateAndLoad(name, ticket);
+        });
+
+        showLogin(true);
+
+        async function loadPassengerDetail() {
+            if (!state.ticket || !state.tokenx) { return; }
+            try {
+                const urlDetail = `${urlx}/api/passangerboard/getdetail?ticket=${encodeURIComponent(state.ticket)}&tokenx=${encodeURIComponent(state.tokenx)}`;
+                const dResp = await fetch(urlDetail);
+                if (!dResp.ok) throw new Error(await dResp.text() || `HTTP ${dResp.status}`);
+                const payload = await dResp.json();
+                if (!payload || !payload.passanger2 || !payload.gpsData) throw new Error('Struktur payload tidak sesuai.');
+                updateShareCard(payload.gpsData, payload.passanger2, payload.turunDi);
+                renderAll(payload);
+                showLogin(false);
+            } catch (err) {
+                Swal.fire({icon:'warning',title:'Gagal',text:err.message,confirmButtonText:'OK'});
+            }
+        }
+
+        document.getElementById('refreshBtn').addEventListener('click', async () => {
+            const refreshBtn = document.getElementById('refreshBtn');
+            setBusy(refreshBtn, true);
+            try { await loadPassengerDetail(); } catch (e) { console.error(e); } finally { setBusy(refreshBtn, false); }
+        });
+    </script>
+</body>
+</html>
