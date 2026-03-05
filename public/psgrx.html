@@ -731,8 +731,12 @@
             if (state.map) { state.map.remove(); state.map = null; }
 
             state.map = L.map('map', { zoomControl: true, scrollWheelZoom: true }).setView([g.lat, g.lon], 12);
-            L.tileLayer('https://api.mapbox.com/styles/v1/{id}/tiles/{z}/{x}/{y}?access_token=pk.eyJ1IjoiZnVuYzAyMDciLCJhIjoiY21pNWpuOHU1MjFwNTJscXozYzE4ZXFuZCJ9.7BF3vfhDCeXnHN309ElPwg', {
-                attribution: '© Mapbox © OpenStreetMap', tileSize: 512, zoomOffset: -1, maxZoom: 22, id: 'mapbox/dark-v11'
+
+            // CartoDB Dark Matter — gratis, tanpa API key
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '© OpenStreetMap © CARTO',
+                subdomains: 'abcd',
+                maxZoom: 20
             }).addTo(state.map);
 
             state.layerGroup = L.layerGroup().addTo(state.map);
@@ -754,20 +758,25 @@
                 else { L.marker([p.lat, p.lon]).addTo(state.layerGroup).bindTooltip(p.name, { direction:'top' }); }
             });
 
+            // Routing: coba OSRM (gratis, public) dulu, fallback ke garis lurus
             try {
-                const start = [g.lon, g.lat];
-                const end = [payload.turunDi.lon, payload.turunDi.lat];
-                const waypoints = payload.estimatePOint.filter(p => p.name.toLowerCase() !== payload.turunDi.name.toLowerCase()).map(p => [p.lon, p.lat]);
-                const coords = [start, ...waypoints, end].map(c => c.join(",")).join(";");
-                const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coords}?geometries=geojson&overview=full&steps=true&access_token=pk.eyJ1IjoiZnVuYzAyMDciLCJhIjoiY21pNWpuOHU1MjFwNTJscXozYzE4ZXFuZCJ9.7BF3vfhDCeXnHN309ElPwg`;
-                const res = await fetch(url);
+                const start = `${g.lon},${g.lat}`;
+                const end = `${payload.turunDi.lon},${payload.turunDi.lat}`;
+                const waypoints = payload.estimatePOint
+                    .filter(p => p.name.toLowerCase() !== payload.turunDi.name.toLowerCase())
+                    .map(p => `${p.lon},${p.lat}`);
+                const coords = [start, ...waypoints, end].join(";");
+
+                // OSRM public demo server (gratis)
+                const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson&steps=false`;
+                const res = await fetch(osrmUrl);
                 const data = await res.json();
 
-                if (data.routes && data.routes.length > 0) {
+                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
                     const route = data.routes[0];
                     const line = route.geometry.coordinates.map(c => [c[1], c[0]]);
                     if (state.routeLine) state.map.removeLayer(state.routeLine);
-                    state.routeLine = L.polyline(line, { color: "blue", weight: 5, opacity: 0.8 }).addTo(state.layerGroup);
+                    state.routeLine = L.polyline(line, { color: "#3b82f6", weight: 5, opacity: 0.8 }).addTo(state.layerGroup);
                     state.map.fitBounds(state.routeLine.getBounds(), { padding: [30, 30] });
 
                     const durasi = route.duration;
@@ -775,8 +784,27 @@
                     const arriveTimeX = new Date(Date.now() + durasi * 1000);
                     document.getElementById('arriveETA').textContent = ` ${payload.turunDi._desc} • ${fmtDate(payload.passanger2.tiba)} • ${arriveTimeX.toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})} WIB`;
                     document.getElementById('wherenow').textContent = `${(jarak/1000).toFixed(1)} km lagi • ${formatDuration(durasi)}`;
+                } else {
+                    throw new Error('OSRM returned no routes');
                 }
-            } catch (err) { console.error("Gagal ambil rute:", err); }
+            } catch (err) {
+                console.warn("OSRM routing gagal, fallback ke garis lurus:", err.message);
+                // Fallback: garis lurus antara bus → waypoints → tujuan
+                const pts = [[g.lat, g.lon]];
+                payload.estimatePOint.forEach(p => pts.push([p.lat, p.lon]));
+                if (state.routeLine) state.map.removeLayer(state.routeLine);
+                state.routeLine = L.polyline(pts, { color: "#3b82f6", weight: 4, opacity: 0.6, dashArray: '10, 8' }).addTo(state.layerGroup);
+                state.map.fitBounds(state.routeLine.getBounds(), { padding: [30, 30] });
+
+                // Hitung jarak garis lurus (Haversine) untuk estimasi
+                const R = 6371000;
+                const toRad = d => d * Math.PI / 180;
+                const dLat = toRad(payload.turunDi.lat - g.lat);
+                const dLon = toRad(payload.turunDi.lon - g.lon);
+                const a = Math.sin(dLat/2)**2 + Math.cos(toRad(g.lat)) * Math.cos(toRad(payload.turunDi.lat)) * Math.sin(dLon/2)**2;
+                const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                document.getElementById('wherenow').textContent = `~${(dist/1000).toFixed(0)} km (estimasi garis lurus)`;
+            }
 
             state.map.setView([g.lat, g.lon], state.map.getZoom(), { animate: true });
         }
@@ -838,39 +866,101 @@
         async function resolveBusImei(busName) {
             if (!busName) return;
             cameraState.busName = busName;
+            const busLower = busName.toLowerCase().trim();
 
+            // Strategy 1: Exact match by name
             try {
-                // Coba cari exact match dulu
                 const res = await fetch(`${DS_TGTRACK_BASE}/api/vehicles/${encodeURIComponent(busName)}`);
                 if (res.ok) {
                     const vehicle = await res.json();
                     if (vehicle && vehicle.imei) {
                         cameraState.busImei = vehicle.imei;
-                        console.log(`📷 Bus "${busName}" → IMEI: ${vehicle.imei}`);
+                        console.log(`📷 [1] "${busName}" → IMEI: ${vehicle.imei} (exact)`);
                         return;
                     }
                 }
+            } catch (e) { console.log('📷 [1] skip:', e.message); }
 
-                // Fallback: cari dari list semua vehicles
+            // Strategy 2: Fuzzy match dari /api/vehicles + nopol match
+            try {
                 const listRes = await fetch(`${DS_TGTRACK_BASE}/api/vehicles`);
                 if (listRes.ok) {
                     const vehicles = await listRes.json();
-                    const match = vehicles.find(v =>
-                        v.name.toLowerCase().includes(busName.toLowerCase()) ||
-                        busName.toLowerCase().includes(v.name.toLowerCase()) ||
-                        (v.display_name && v.display_name.toLowerCase().includes(busName.toLowerCase()))
+
+                    // 2a: case-insensitive exact
+                    let match = vehicles.find(v => v.name.toLowerCase().trim() === busLower);
+
+                    // 2b: partial match name / display_name
+                    if (!match) match = vehicles.find(v =>
+                        v.name.toLowerCase().includes(busLower) ||
+                        busLower.includes(v.name.toLowerCase()) ||
+                        (v.display_name && v.display_name.toLowerCase().includes(busLower))
                     );
+
+                    // 2c: nopol match (kalau passenger data punya nopol)
+                    if (!match && globalPayload && globalPayload.passanger2) {
+                        const nopol = (globalPayload.passanger2.nopol || globalPayload.passanger2.plate || '').toLowerCase().replace(/\s/g,'');
+                        if (nopol) {
+                            match = vehicles.find(v => v.lpn && v.lpn.toLowerCase().replace(/\s/g,'') === nopol);
+                        }
+                    }
+
                     if (match) {
                         cameraState.busImei = match.imei;
-                        console.log(`📷 Bus "${busName}" → IMEI: ${match.imei} (fuzzy match: ${match.name})`);
+                        console.log(`📷 [2] "${busName}" → IMEI: ${match.imei} (fuzzy: ${match.name})`);
                         return;
                     }
                 }
+            } catch (e) { console.log('📷 [2] skip:', e.message); }
 
-                console.warn(`📷 Bus "${busName}" IMEI not found in ds-tgtrack`);
-            } catch (err) {
-                console.warn(`📷 Could not resolve IMEI for "${busName}":`, err.message);
-            }
+            // Strategy 3: Command-center vehicles (punya display_name)
+            try {
+                const ccRes = await fetch(`${DS_TGTRACK_BASE}/api/command-center/vehicles`);
+                if (ccRes.ok) {
+                    const ccVehicles = await ccRes.json();
+                    const match = ccVehicles.find(v =>
+                        (v.vehicle_name || '').toLowerCase().includes(busLower) ||
+                        (v.display_name || '').toLowerCase().includes(busLower) ||
+                        busLower.includes((v.vehicle_name || '').toLowerCase())
+                    );
+                    if (match && match.imei) {
+                        cameraState.busImei = match.imei;
+                        console.log(`📷 [3] "${busName}" → IMEI: ${match.imei} (cc: ${match.vehicle_name})`);
+                        return;
+                    }
+                }
+            } catch (e) { console.log('📷 [3] skip:', e.message); }
+
+            // Strategy 4: Smartiv GetActiveTrips → nopol → vehicles lookup
+            try {
+                const smartivToken = localStorage.getItem("dashboard_api_token");
+                if (smartivToken) {
+                    const tripsRes = await fetch(`https://j99t.tech/api/Smartiv/GetActiveTrips`, {
+                        headers: { "accept": "*/*", "X-Api-Token": smartivToken }
+                    });
+                    if (tripsRes.ok) {
+                        const trips = await tripsRes.json();
+                        const tripList = Array.isArray(trips) ? trips : (trips.data || []);
+                        const tripMatch = tripList.find(t =>
+                            (t.bus || t.busName || '').toLowerCase().trim() === busLower
+                        );
+                        if (tripMatch && tripMatch.nopol) {
+                            const vRes = await fetch(`${DS_TGTRACK_BASE}/api/vehicles`);
+                            if (vRes.ok) {
+                                const vList = await vRes.json();
+                                const vMatch = vList.find(v => v.lpn && v.lpn.toLowerCase().replace(/\s/g,'') === tripMatch.nopol.toLowerCase().replace(/\s/g,''));
+                                if (vMatch) {
+                                    cameraState.busImei = vMatch.imei;
+                                    console.log(`📷 [4] "${busName}" → nopol "${tripMatch.nopol}" → IMEI: ${vMatch.imei}`);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e) { console.log('📷 [4] skip:', e.message); }
+
+            console.warn(`📷 Bus "${busName}" IMEI not found after all strategies`);
         }
 
         /**
