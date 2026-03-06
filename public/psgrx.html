@@ -869,36 +869,23 @@
             cameraState.busName = busName;
             const busLower = busName.toLowerCase().trim();
 
-            // Strategy 1: Exact match by name
-            try {
-                const res = await fetch(`${DS_TGTRACK_BASE}/api/vehicles/${encodeURIComponent(busName)}`);
-                if (res.ok) {
-                    const vehicle = await res.json();
-                    if (vehicle && vehicle.imei) {
-                        cameraState.busImei = vehicle.imei;
-                        console.log(`📷 [1] "${busName}" → IMEI: ${vehicle.imei} (exact)`);
-                        return;
-                    }
-                }
-            } catch (e) { console.log('📷 [1] skip:', e.message); }
-
-            // Strategy 2: Fuzzy match dari /api/vehicles + nopol match
+            // Strategy 1: Get all vehicles dan match (most reliable)
             try {
                 const listRes = await fetch(`${DS_TGTRACK_BASE}/api/vehicles`);
                 if (listRes.ok) {
                     const vehicles = await listRes.json();
 
-                    // 2a: case-insensitive exact
-                    let match = vehicles.find(v => v.name.toLowerCase().trim() === busLower);
+                    // 1a: case-insensitive exact name match
+                    let match = vehicles.find(v => v.name && v.name.toLowerCase().trim() === busLower);
 
-                    // 2b: partial match name / display_name
+                    // 1b: partial match name / display_name
                     if (!match) match = vehicles.find(v =>
-                        v.name.toLowerCase().includes(busLower) ||
-                        busLower.includes(v.name.toLowerCase()) ||
+                        (v.name && v.name.toLowerCase().includes(busLower)) ||
+                        (v.name && busLower.includes(v.name.toLowerCase())) ||
                         (v.display_name && v.display_name.toLowerCase().includes(busLower))
                     );
 
-                    // 2c: nopol match (kalau passenger data punya nopol)
+                    // 1c: nopol match (kalau passenger data punya nopol)
                     if (!match && globalPayload && globalPayload.passanger2) {
                         const nopol = (globalPayload.passanger2.nopol || globalPayload.passanger2.plate || '').toLowerCase().replace(/\s/g,'');
                         if (nopol) {
@@ -906,33 +893,15 @@
                         }
                     }
 
-                    if (match) {
-                        cameraState.busImei = match.imei;
-                        console.log(`📷 [2] "${busName}" → IMEI: ${match.imei} (fuzzy: ${match.name})`);
-                        return;
-                    }
-                }
-            } catch (e) { console.log('📷 [2] skip:', e.message); }
-
-            // Strategy 3: Command-center vehicles (punya display_name)
-            try {
-                const ccRes = await fetch(`${DS_TGTRACK_BASE}/api/command-center/vehicles`);
-                if (ccRes.ok) {
-                    const ccVehicles = await ccRes.json();
-                    const match = ccVehicles.find(v =>
-                        (v.vehicle_name || '').toLowerCase().includes(busLower) ||
-                        (v.display_name || '').toLowerCase().includes(busLower) ||
-                        busLower.includes((v.vehicle_name || '').toLowerCase())
-                    );
                     if (match && match.imei) {
                         cameraState.busImei = match.imei;
-                        console.log(`📷 [3] "${busName}" → IMEI: ${match.imei} (cc: ${match.vehicle_name})`);
+                        console.log(`📷 [1] "${busName}" → IMEI: ${match.imei} (matched: ${match.name})`);
                         return;
                     }
                 }
-            } catch (e) { console.log('📷 [3] skip:', e.message); }
+            } catch (e) { console.log('📷 [1] skip:', e.message); }
 
-            // Strategy 4: Smartiv GetActiveTrips → nopol → vehicles lookup
+            // Strategy 2: Smartiv GetActiveTrips → nopol → vehicles lookup
             try {
                 const smartivToken = localStorage.getItem("dashboard_api_token");
                 if (smartivToken) {
@@ -950,16 +919,16 @@
                             if (vRes.ok) {
                                 const vList = await vRes.json();
                                 const vMatch = vList.find(v => v.lpn && v.lpn.toLowerCase().replace(/\s/g,'') === tripMatch.nopol.toLowerCase().replace(/\s/g,''));
-                                if (vMatch) {
+                                if (vMatch && vMatch.imei) {
                                     cameraState.busImei = vMatch.imei;
-                                    console.log(`📷 [4] "${busName}" → nopol "${tripMatch.nopol}" → IMEI: ${vMatch.imei}`);
+                                    console.log(`📷 [2] "${busName}" → nopol "${tripMatch.nopol}" → IMEI: ${vMatch.imei}`);
                                     return;
                                 }
                             }
                         }
                     }
                 }
-            } catch (e) { console.log('📷 [4] skip:', e.message); }
+            } catch (e) { console.log('📷 [2] skip:', e.message); }
 
             console.warn(`📷 Bus "${busName}" IMEI not found after all strategies`);
         }
