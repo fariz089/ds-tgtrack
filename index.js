@@ -4,6 +4,7 @@ const axios = require("axios");
 const path = require("path");
 const express = require("express");
 const expressLayouts = require("express-ejs-layouts");
+const cors = require("cors");
 const config = require("./config");
 const LoginManager = require("./login");
 const AlarmFileQueue = require("./queue");
@@ -27,6 +28,34 @@ const CoordinateWorker = require("./coordinateWorker");
 const AlarmStoreWorker = require("./alarmStoreWorker");
 const SoloFleetWorker = require("./solofleetWorker");
 const SoloFleetVideoService = require("./solofleetVideoService");
+
+// CORS configuration - allow psgrx from different origins
+const allowedOrigins = [
+  'https://trans.j99t.tech',
+  'https://j99t.tech',
+  'https://adas.j99t.tech',
+  'http://localhost:3000',
+  'http://localhost:8080',
+  'http://127.0.0.1:3000'
+];
+
+app.use(cors({
+  origin: function(origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, etc)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      // Log but still allow for development
+      console.log(`⚠️ CORS request from: ${origin}`);
+      callback(null, true); // Allow all origins for now, tighten in production
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Api-Token', 'X-Requested-With']
+}));
 
 // Setup EJS dengan layout
 app.set("view engine", "ejs");

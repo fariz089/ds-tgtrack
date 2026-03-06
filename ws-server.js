@@ -5,6 +5,35 @@ const WebSocket = require("ws");
 let wss = null;
 const clients = new Set();
 
+// Allowed origins for WebSocket connections
+const allowedWsOrigins = [
+  'https://trans.j99t.tech',
+  'https://j99t.tech',
+  'https://adas.j99t.tech',
+  'http://localhost:3000',
+  'http://localhost:8080',
+  'http://127.0.0.1:3000'
+];
+
+// Verify WebSocket client origin
+function verifyClient(info, callback) {
+  const origin = info.origin || info.req.headers.origin;
+  
+  // Allow connections with no origin (non-browser clients)
+  if (!origin) {
+    return callback(true);
+  }
+  
+  // Check if origin is allowed
+  if (allowedWsOrigins.includes(origin)) {
+    return callback(true);
+  }
+  
+  // Log but allow for development (tighten in production)
+  console.log(`⚠️ WebSocket connection from: ${origin}`);
+  return callback(true); // Allow all for now
+}
+
 // Initialize WebSocket Server
 // Option 1: Standalone port (backward compat)
 // Option 2: Attach to existing HTTP server (for Cloudflare tunnel)
@@ -16,19 +45,26 @@ function initWebSocketServer(portOrServer = 8008) {
 
   if (typeof portOrServer === "number") {
     // Standalone mode (backward compat)
-    wss = new WebSocket.Server({ port: portOrServer });
+    wss = new WebSocket.Server({ 
+      port: portOrServer,
+      verifyClient: verifyClient
+    });
     wss.on("listening", () => {
       console.log(`🔌 WebSocket server listening on ws://localhost:${portOrServer}`);
     });
   } else {
     // Attached to HTTP server - uses noServer mode
-    wss = new WebSocket.Server({ noServer: true });
+    wss = new WebSocket.Server({ 
+      noServer: true,
+      verifyClient: verifyClient
+    });
     console.log("🔌 WebSocket server attached to HTTP server (path: /ws/copilot)");
   }
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
     clients.add(ws);
-    console.log(`✅ Copilot client connected (total: ${clients.size})`);
+    const origin = req.headers.origin || 'unknown';
+    console.log(`✅ Copilot client connected from ${origin} (total: ${clients.size})`);
 
     ws.send(JSON.stringify({ type: "system", message: "Connected to alarm system" }));
 
