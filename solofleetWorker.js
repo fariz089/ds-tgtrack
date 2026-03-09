@@ -166,13 +166,14 @@ class SoloFleetWorker {
   }
 
   async ensureLoggedIn() {
-    // Re-login every 4 hours (ASP.NET session timeout safety)
-    const FOUR_HOURS = 4 * 60 * 60 * 1000;
+    // Re-login every 2 hours (more aggressive than before to prevent stale sessions)
+    const TWO_HOURS = 2 * 60 * 60 * 1000;
     if (
       !this.isLoggedIn ||
       !this.loginTime ||
-      Date.now() - this.loginTime >= FOUR_HOURS
+      Date.now() - this.loginTime >= TWO_HOURS
     ) {
+      console.log("[SoloFleet] 🔄 Session expired or not logged in, re-logging in...");
       return await this.login();
     }
     return true;
@@ -209,7 +210,22 @@ class SoloFleetWorker {
         { startdatetime: startDatetime, enddatetime: endDatetime },
         { headers: { "Content-Type": "application/json; charset=utf-8" } }
       );
-      return resp.data || [];
+      
+      // Validate response is actual JSON data, not HTML login page
+      if (typeof resp.data === 'string' && resp.data.includes('Login')) {
+        console.error("[SoloFleet] ⚠ Got login page instead of data, session expired!");
+        this.isLoggedIn = false;
+        // Retry once after re-login
+        await this.login();
+        const retry = await this.client.post(
+          "/Video/getadasdms_videohistoryPerCompany",
+          { startdatetime: startDatetime, enddatetime: endDatetime },
+          { headers: { "Content-Type": "application/json; charset=utf-8" } }
+        );
+        return Array.isArray(retry.data) ? retry.data : [];
+      }
+      
+      return Array.isArray(resp.data) ? resp.data : [];
     } catch (err) {
       console.error("[SoloFleet] Error fetch ADAS/DMS events:", err.message);
       if (err.response?.status === 401 || err.response?.status === 302) {
@@ -724,6 +740,7 @@ class SoloFleetWorker {
       const result = await this.fetchAndStoreAlarms(startStr, endStr);
 
       this.historyFetched = true;
+      this._lastHistorySync = Date.now();
       console.log(`[SoloFleet] ✅ HISTORY MODE COMPLETED!\n`);
 
       return result;
@@ -731,6 +748,29 @@ class SoloFleetWorker {
       console.error(`[SoloFleet] ❌ History fetch error:`, err.message);
       this.historyFetched = true; // Don't retry on error
       return { stored: 0, skipped: 0, errors: 1 };
+    }
+  }
+
+  // Periodic re-sync: fetch last 7 days to fill any gaps
+  // Called from runCycle every 6 hours
+  async periodicResync() {
+    const SIX_HOURS = 6 * 60 * 60 * 1000;
+    if (this._lastHistorySync && Date.now() - this._lastHistorySync < SIX_HOURS) {
+      return; // Not time yet
+    }
+
+    console.log(`[SoloFleet] 🔄 Periodic re-sync: fetching last 7 days...`);
+    try {
+      const endTime = new Date();
+      const startTime = new Date(endTime.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const startStr = this.formatDatetime(startTime);
+      const endStr = this.formatDatetime(endTime);
+
+      const result = await this.fetchAndStoreAlarms(startStr, endStr);
+      this._lastHistorySync = Date.now();
+      console.log(`[SoloFleet] ✅ Re-sync done: stored ${result.stored}, skipped ${result.skipped}`);
+    } catch (err) {
+      console.error(`[SoloFleet] ❌ Re-sync error:`, err.message);
     }
   }
 
@@ -752,13 +792,37 @@ class SoloFleetWorker {
         );
       }
 
-      // Fetch alarms: last 2 minutes
+      // Fetch alarms: last 5 minutes (wider window to catch delayed events)
       const now = new Date();
-      const twoMinAgo = new Date(now.getTime() - 2 * 60 * 1000);
-      const startStr = this.formatDatetime(twoMinAgo);
+      const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
+      const startStr = this.formatDatetime(fiveMinAgo);
       const endStr = this.formatDatetime(now);
 
       await this.fetchAndStoreAlarms(startStr, endStr);
+
+      // Periodic gap-fill: every 10 minutes, fetch the last 2 hours
+      // This catches any events that were delayed or missed by the short polling window
+      this._cycleCount = (this._cycleCount || 0) + 1;
+      const gapFillEveryN = Math.max(1, Math.floor((10 * 60 * 1000) / (this.config.interval || 15000))); // every ~10 min
+      if (this._cycleCount % gapFillEveryN === 0) {
+        const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+        const gapStartStr = this.formatDatetime(twoHoursAgo);
+        console.log(`[SoloFleet] 🔄 Gap-fill: ${gapStartStr} -> ${endStr}`);
+        await this.fetchAndStoreAlarms(gapStartStr, endStr);
+      }
+
+      // Periodic deep catch-up: every 1 hour, fetch the last 24 hours
+      // This ensures no data is permanently lost due to API delays or brief outages
+      const deepCatchupEveryN = Math.max(1, Math.floor((60 * 60 * 1000) / (this.config.interval || 15000))); // every ~1 hour
+      if (this._cycleCount % deepCatchupEveryN === 0) {
+        const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        const deepStartStr = this.formatDatetime(oneDayAgo);
+        console.log(`[SoloFleet] 🔄 Deep catch-up: ${deepStartStr} -> ${endStr}`);
+        await this.fetchAndStoreAlarms(deepStartStr, endStr);
+
+        // Also run periodic 7-day re-sync every 6 hours
+        await this.periodicResync();
+      }
     } catch (err) {
       console.error("[SoloFleet] ❌ Cycle error:", err.message);
       if (
