@@ -112,5 +112,10 @@
 
 <!-- Scripts -->
 <script src="https://maps.googleapis.com/maps/api/js?key=<%= googleMapsApiKey %>&callback=initMap" async defer></script>
-<script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
+<!-- mpegts.js: successor to flv.js, supports FLV + MPEG-TS + low-latency -->
+<script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js"></script>
+<!-- HLS.js: pre-loaded for M3U8/HLS streams (Chrome/Firefox) -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7/dist/hls.min.js"></script>
+<!-- JMuxer: for SoloFleet H.264 WebSocket streams -->
+<script src="https://cdn.jsdelivr.net/npm/jmuxer@2.0.5/dist/jmuxer.min.js"></script>
 <script src="/js/command-center.js"></script>

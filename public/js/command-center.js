@@ -4,7 +4,6 @@ let markers = [];
 let selectedVehicle = null;
 let vehiclesData = [];
 let currentAlarmTab = "all";
-let flvPlayer = null;
 let sfJmuxer = null;
 let sfWebSocket = null;
 
@@ -18,7 +17,7 @@ function closeVehicleModal() {
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
-  // console.log("✅ FLV.js version:", typeof flvjs !== "undefined" ? flvjs.version : "NOT LOADED");
+  // console.log("✅ mpegts.js loaded:", typeof mpegts !== "undefined" ? mpegts.version : "NOT LOADED");
 
   loadVehicles();
 
@@ -530,18 +529,8 @@ function openVideoPreview(videoUrl) {
 
   console.log("Opening video:", videoUrl);
 
-  // Stop FLV player if active
-  if (flvPlayer) {
-    try {
-      flvPlayer.pause();
-      flvPlayer.unload();
-      flvPlayer.detachMediaElement();
-      flvPlayer.destroy();
-      flvPlayer = null;
-    } catch (err) {
-      console.error("Error destroying FLV player:", err);
-    }
-  }
+  // Stop any active stream players
+  cleanupAllPlayers();
 
   player.src = videoUrl;
   player.play().catch((err) => {
@@ -562,129 +551,427 @@ function closeImage() {
   modal.classList.remove("active");
 }
 
-let hlsPlayer = null;
+// ============================================================
+// VIDEO PLAYER ENGINE v2.0
+// Stack: mpegts.js (FLV/MPEG-TS) + HLS.js (M3U8) + JMuxer (SoloFleet H.264)
+// Fallback chain: HLS → mpegts.js FLV → mpegts.js direct HTTP → error
+// ============================================================
 
+let hlsPlayer = null;
+let mpegtsPlayer = null;
+let currentStreamAttempt = 0; // Track retry attempts
+const MAX_STREAM_RETRIES = 2;
+
+// ── Main entry point ──────────────────────────────────────
 function openCamera(imei, channel, vehicleName) {
-  console.log(`Opening camera: ${imei}, channel ${channel}`);
+  console.log(`[Camera] Opening: ${imei}, channel ${channel}`);
 
   const modal = document.getElementById("videoModal");
   const player = document.getElementById("videoPlayer");
   const info = document.getElementById("videoInfo");
 
+  // Reset state
+  cleanupAllPlayers();
+  currentStreamAttempt = 0;
+  player.src = "";
+
   info.textContent = `${vehicleName} - Camera ${channel} (Loading...)`;
   modal.classList.add("active");
 
-  // First check camera source and get stream URLs
+  // Step 1: Check camera source and get stream URLs
   fetch(`/api/video/check/${imei}/${channel}`)
-    .then((r) => r.json())
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
     .then((data) => {
-      console.log('Camera check response:', data);
-      
+      console.log("[Camera] Check response:", data);
+
+      if (!data.available && !data.is_present) {
+        info.textContent = `${vehicleName} - Camera ${channel} (Camera offline atau tidak tersedia)`;
+        return;
+      }
+
       if (data.source === "solofleet") {
-        // Use SoloFleet WebSocket + JMuxer
+        // SoloFleet: WebSocket + JMuxer (H.264 raw)
         streamSoloFleet(imei, channel, vehicleName);
-      } else if (data.m3u8) {
-        // Priority 1: HLS (M3U8) - direct from CDN, fastest
-        streamHLS(data.m3u8, imei, channel, vehicleName);
       } else {
-        // Priority 2: FLV via proxy
-        if (typeof flvjs === "undefined" || !flvjs.isSupported()) {
-          console.error("FLV.js not supported");
-          info.textContent = `${vehicleName} - Camera ${channel} (Player not supported)`;
-          return;
-        }
-        streamFLV(imei, channel, vehicleName);
+        // TGTrack: try the best protocol available
+        startTGTrackStream(data, imei, channel, vehicleName);
       }
     })
     .catch((err) => {
-      console.error("Camera check error:", err);
-      // Fallback to FLV
-      if (typeof flvjs !== "undefined" && flvjs.isSupported()) {
-        streamFLV(imei, channel, vehicleName);
-      }
+      console.error("[Camera] Check error:", err);
+      info.textContent = `${vehicleName} - Camera ${channel} (Gagal koneksi ke server: ${err.message})`;
     });
 }
 
-// Stream HLS (M3U8) - Direct from CDN, fastest option
-function streamHLS(m3u8Url, imei, channel, vehicleName) {
+// ── TGTrack stream strategy ───────────────────────────────
+// Priority: 1) HLS/M3U8  2) FLV via mpegts.js  3) HTTP-FLV direct
+function startTGTrackStream(streamData, imei, channel, vehicleName) {
+  const info = document.getElementById("videoInfo");
+
+  // Priority 1: HLS (M3U8) — best quality, CDN-backed
+  if (streamData.m3u8) {
+    console.log("[Camera] Trying HLS first:", streamData.m3u8);
+    streamHLS(streamData.m3u8, imei, channel, vehicleName, streamData);
+    return;
+  }
+
+  // Priority 2: FLV via mpegts.js proxy
+  if (streamData.http || streamData.ws) {
+    console.log("[Camera] No M3U8, trying FLV via mpegts.js");
+    streamMpegTS_FLV(imei, channel, vehicleName, streamData);
+    return;
+  }
+
+  info.textContent = `${vehicleName} - Camera ${channel} (Tidak ada stream URL tersedia)`;
+}
+
+// ── HLS Player (M3U8) ────────────────────────────────────
+function streamHLS(m3u8Url, imei, channel, vehicleName, streamData) {
   const player = document.getElementById("videoPlayer");
   const info = document.getElementById("videoInfo");
 
-  // Cleanup previous players
   cleanupAllPlayers();
-  
   info.textContent = `${vehicleName} - Camera ${channel} (Connecting HLS...)`;
 
-  // Check if HLS is natively supported (Safari)
-  if (player.canPlayType('application/vnd.apple.mpegurl')) {
+  // Safari: native HLS support
+  if (player.canPlayType("application/vnd.apple.mpegurl")) {
+    console.log("[HLS] Using native Safari HLS");
     player.src = m3u8Url;
-    player.addEventListener('loadedmetadata', function onLoad() {
+
+    const onLoad = () => {
       info.textContent = `${vehicleName} - Camera ${channel} (Live - HLS)`;
-      player.removeEventListener('loadedmetadata', onLoad);
-    });
-    player.addEventListener('error', function onError(e) {
-      console.error('HLS native error:', e);
-      info.textContent = `${vehicleName} - Camera ${channel} (HLS failed, trying FLV...)`;
-      streamFLV(imei, channel, vehicleName);
-      player.removeEventListener('error', onError);
-    });
-    player.play().catch(err => {
-      console.log('HLS autoplay blocked:', err);
-    });
-    return;
-  }
-
-  // Load HLS.js for Chrome/Firefox
-  if (typeof Hls === 'undefined') {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js';
-    script.onload = () => initHLSPlayer(m3u8Url, imei, channel, vehicleName);
-    script.onerror = () => {
-      info.textContent = `${vehicleName} - Camera ${channel} (HLS.js failed, trying FLV...)`;
-      streamFLV(imei, channel, vehicleName);
+      player.removeEventListener("loadedmetadata", onLoad);
     };
-    document.head.appendChild(script);
-  } else {
-    initHLSPlayer(m3u8Url, imei, channel, vehicleName);
-  }
-}
+    const onError = () => {
+      console.error("[HLS] Native HLS failed, falling back to FLV");
+      player.removeEventListener("error", onError);
+      player.removeEventListener("loadedmetadata", onLoad);
+      streamMpegTS_FLV(imei, channel, vehicleName, streamData);
+    };
 
-function initHLSPlayer(m3u8Url, imei, channel, vehicleName) {
-  const player = document.getElementById("videoPlayer");
-  const info = document.getElementById("videoInfo");
-
-  if (!Hls.isSupported()) {
-    info.textContent = `${vehicleName} - Camera ${channel} (HLS not supported, trying FLV...)`;
-    streamFLV(imei, channel, vehicleName);
+    player.addEventListener("loadedmetadata", onLoad);
+    player.addEventListener("error", onError);
+    player.play().catch(() => {});
     return;
   }
 
+  // Chrome/Firefox: use HLS.js (pre-loaded)
+  if (typeof Hls === "undefined" || !Hls.isSupported()) {
+    console.warn("[HLS] HLS.js not available, falling back to FLV");
+    streamMpegTS_FLV(imei, channel, vehicleName, streamData);
+    return;
+  }
+
+  console.log("[HLS] Using HLS.js");
   hlsPlayer = new Hls({
     enableWorker: true,
     lowLatencyMode: true,
     backBufferLength: 30,
+    maxBufferLength: 10,
+    maxMaxBufferLength: 30,
+    liveSyncDurationCount: 3,
+    liveMaxLatencyDurationCount: 6,
+    // Faster error recovery
+    fragLoadingMaxRetry: 3,
+    fragLoadingMaxRetryTimeout: 8000,
+    manifestLoadingMaxRetry: 3,
+    levelLoadingMaxRetry: 3,
   });
 
   hlsPlayer.loadSource(m3u8Url);
   hlsPlayer.attachMedia(player);
 
+  let hlsTimeout = setTimeout(() => {
+    console.warn("[HLS] Timeout - no playback after 15s, falling back to FLV");
+    cleanupHLS();
+    streamMpegTS_FLV(imei, channel, vehicleName, streamData);
+  }, 15000);
+
   hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
+    clearTimeout(hlsTimeout);
     info.textContent = `${vehicleName} - Camera ${channel} (Live - HLS)`;
-    player.play().catch(err => {
-      console.log('HLS autoplay blocked:', err);
-    });
+    player.play().catch((err) => console.log("[HLS] Autoplay blocked:", err));
   });
 
   hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
-    console.error('HLS.js error:', data);
+    console.error("[HLS] Error:", data.type, data.details);
     if (data.fatal) {
-      info.textContent = `${vehicleName} - Camera ${channel} (HLS error, trying FLV...)`;
-      cleanupHLS();
-      streamFLV(imei, channel, vehicleName);
+      clearTimeout(hlsTimeout);
+
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        console.log("[HLS] Network error, trying recovery once...");
+        hlsPlayer.startLoad();
+        // If still fails after 5s, fallback
+        setTimeout(() => {
+          if (hlsPlayer) {
+            console.log("[HLS] Recovery failed, falling back to FLV");
+            cleanupHLS();
+            streamMpegTS_FLV(imei, channel, vehicleName, streamData);
+          }
+        }, 5000);
+      } else {
+        console.log("[HLS] Fatal non-network error, falling back to FLV");
+        cleanupHLS();
+        streamMpegTS_FLV(imei, channel, vehicleName, streamData);
+      }
     }
   });
 }
 
+// ── mpegts.js FLV Player ──────────────────────────────────
+// Replaces flv.js with better error recovery and low-latency support
+function streamMpegTS_FLV(imei, channel, vehicleName, streamData) {
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  cleanupMpegTS();
+
+  if (typeof mpegts === "undefined" || !mpegts.isSupported()) {
+    console.error("[mpegts] Not supported in this browser");
+    info.textContent = `${vehicleName} - Camera ${channel} (Browser tidak support video player)`;
+    return;
+  }
+
+  // Use WS (WebSocket-FLV) if available, otherwise HTTP-FLV proxy
+  let streamUrl;
+  let useWebSocket = false;
+
+  if (streamData && streamData.ws) {
+    // Direct WebSocket FLV from TGTrack gateway (lowest latency)
+    streamUrl = streamData.ws;
+    useWebSocket = true;
+    console.log("[mpegts] Using WebSocket-FLV:", streamUrl);
+  } else {
+    // HTTP-FLV via our proxy
+    streamUrl = `/api/video/stream/${imei}/${channel}`;
+    console.log("[mpegts] Using HTTP-FLV proxy:", streamUrl);
+  }
+
+  info.textContent = `${vehicleName} - Camera ${channel} (Connecting FLV...)`;
+
+  try {
+    const playerConfig = {
+      type: "flv",
+      isLive: true,
+      hasAudio: false,
+      cors: true,
+      url: streamUrl,
+    };
+
+    // If WebSocket URL, adjust config
+    if (useWebSocket) {
+      playerConfig.type = "flv";
+      playerConfig.url = streamUrl;
+    }
+
+    mpegtsPlayer = mpegts.createPlayer(playerConfig, {
+      // mpegts.js specific config for low latency
+      enableWorker: true,
+      enableStashBuffer: false, // Disable stash for lowest latency
+      stashInitialSize: 128, // Small initial buffer
+      lazyLoad: false,
+      autoCleanupSourceBuffer: true,
+      autoCleanupMaxBackwardDuration: 5,
+      autoCleanupMinBackwardDuration: 3,
+      liveBufferLatencyChasing: true, // Chase live edge
+      liveBufferLatencyMaxLatency: 3.0, // Max 3s behind live
+      liveBufferLatencyMinRemain: 0.5, // Min buffer
+    });
+
+    mpegtsPlayer.attachMediaElement(player);
+    mpegtsPlayer.load();
+
+    // Timeout: if no data after 20s, retry or fail
+    let playbackStarted = false;
+    let loadTimeout = setTimeout(() => {
+      if (!playbackStarted) {
+        console.warn("[mpegts] Timeout - no playback after 20s");
+        handleFLVError(imei, channel, vehicleName, "Timeout - tidak ada data");
+      }
+    }, 20000);
+
+    mpegtsPlayer.on(mpegts.Events.LOADING_COMPLETE, () => {
+      console.log("[mpegts] Loading complete (stream ended)");
+      info.textContent = `${vehicleName} - Camera ${channel} (Stream berakhir)`;
+    });
+
+    mpegtsPlayer.on(mpegts.Events.MEDIA_INFO, (mediaInfo) => {
+      console.log("[mpegts] Media info:", mediaInfo);
+    });
+
+    mpegtsPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
+      console.error("[mpegts] Error:", errorType, errorDetail, errorInfo);
+      clearTimeout(loadTimeout);
+      handleFLVError(imei, channel, vehicleName, `${errorType}: ${errorDetail}`);
+    });
+
+    // Start playback
+    mpegtsPlayer
+      .play()
+      .then(() => {
+        playbackStarted = true;
+        clearTimeout(loadTimeout);
+        console.log("[mpegts] Playing!");
+        info.textContent = `${vehicleName} - Camera ${channel} (Live - FLV)`;
+      })
+      .catch((err) => {
+        console.error("[mpegts] Play error:", err);
+        // Try muted autoplay (browser policy)
+        player.muted = true;
+        player
+          .play()
+          .then(() => {
+            playbackStarted = true;
+            clearTimeout(loadTimeout);
+            info.textContent = `${vehicleName} - Camera ${channel} (Live - FLV 🔇)`;
+          })
+          .catch((err2) => {
+            clearTimeout(loadTimeout);
+            info.textContent = `${vehicleName} - Camera ${channel} (Klik video untuk play)`;
+            // Add click-to-play handler
+            player.addEventListener(
+              "click",
+              () => {
+                player.play().catch(() => {});
+              },
+              { once: true }
+            );
+          });
+      });
+  } catch (err) {
+    console.error("[mpegts] Init error:", err);
+    info.textContent = `${vehicleName} - Camera ${channel} (Init Error: ${err.message})`;
+  }
+}
+
+// ── FLV Error handler with retry logic ────────────────────
+function handleFLVError(imei, channel, vehicleName, errorMsg) {
+  const info = document.getElementById("videoInfo");
+
+  currentStreamAttempt++;
+
+  if (currentStreamAttempt <= MAX_STREAM_RETRIES) {
+    console.log(`[mpegts] Retry attempt ${currentStreamAttempt}/${MAX_STREAM_RETRIES}`);
+    info.textContent = `${vehicleName} - Camera ${channel} (Reconnecting... ${currentStreamAttempt}/${MAX_STREAM_RETRIES})`;
+
+    cleanupMpegTS();
+
+    // Wait before retry (exponential backoff)
+    setTimeout(() => {
+      // Re-fetch stream info for fresh URLs
+      fetch(`/api/video/check/${imei}/${channel}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.available || data.is_present) {
+            streamMpegTS_FLV(imei, channel, vehicleName, data);
+          } else {
+            info.textContent = `${vehicleName} - Camera ${channel} (Camera offline)`;
+          }
+        })
+        .catch(() => {
+          // Last resort: try proxy without fresh URLs
+          streamMpegTS_FLV(imei, channel, vehicleName, {});
+        });
+    }, 2000 * currentStreamAttempt);
+  } else {
+    info.textContent = `${vehicleName} - Camera ${channel} (Gagal terhubung setelah ${MAX_STREAM_RETRIES}x percobaan: ${errorMsg})`;
+  }
+}
+
+// ── SoloFleet stream (WebSocket + JMuxer) ─────────────────
+function streamSoloFleet(imei, channel, vehicleName) {
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  cleanupSoloFleetStream();
+  info.textContent = `${vehicleName} - Camera ${channel} (Connecting SoloFleet...)`;
+
+  if (typeof JMuxer === "undefined") {
+    info.textContent = `${vehicleName} - Camera ${channel} (JMuxer not loaded)`;
+    return;
+  }
+
+  initSoloFleetStream(imei, channel, vehicleName);
+}
+
+function initSoloFleetStream(imei, channel, vehicleName) {
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  try {
+    sfJmuxer = new JMuxer({
+      node: "videoPlayer",
+      mode: "video",
+      flushingTime: 1000,
+      clearBuffer: true,
+      fps: 15,
+      debug: false,
+      onError: function (data) {
+        console.error("[SoloFleet] JMuxer error:", data);
+      },
+    });
+
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/api/video/sf-stream/${imei}/${channel}`;
+    console.log("[SoloFleet] WS URL:", wsUrl);
+
+    sfWebSocket = new WebSocket(wsUrl);
+    sfWebSocket.binaryType = "arraybuffer";
+
+    let framesReceived = 0;
+
+    // Timeout if no frames after 15s
+    let sfTimeout = setTimeout(() => {
+      if (framesReceived === 0) {
+        info.textContent = `${vehicleName} - Camera ${channel} (DVR tidak merespons - mungkin offline)`;
+      }
+    }, 15000);
+
+    sfWebSocket.onopen = () => {
+      console.log("[SoloFleet] WS connected");
+      info.textContent = `${vehicleName} - Camera ${channel} (Waiting for DVR stream...)`;
+    };
+
+    sfWebSocket.onmessage = (event) => {
+      framesReceived++;
+      const data = new Uint8Array(event.data);
+
+      sfJmuxer.feed({ video: data });
+
+      if (framesReceived === 1) {
+        clearTimeout(sfTimeout);
+        info.textContent = `${vehicleName} - Camera ${channel} (Live - SoloFleet)`;
+        player.play().catch(() => {});
+      }
+
+      if (framesReceived % 100 === 0) {
+        console.log(`[SoloFleet] ${framesReceived} frames received`);
+      }
+    };
+
+    sfWebSocket.onerror = (err) => {
+      clearTimeout(sfTimeout);
+      console.error("[SoloFleet] WS error:", err);
+      info.textContent = `${vehicleName} - Camera ${channel} (Connection Error)`;
+    };
+
+    sfWebSocket.onclose = (event) => {
+      clearTimeout(sfTimeout);
+      console.log("[SoloFleet] WS closed:", event.code, event.reason);
+      if (framesReceived === 0) {
+        info.textContent = `${vehicleName} - Camera ${channel} (Stream Unavailable - DVR offline)`;
+      }
+    };
+  } catch (err) {
+    console.error("[SoloFleet] Init error:", err);
+    info.textContent = `${vehicleName} - Camera ${channel} (Init Error)`;
+  }
+}
+
+// ── Cleanup functions ─────────────────────────────────────
 function cleanupHLS() {
   if (hlsPlayer) {
     try {
@@ -694,119 +981,15 @@ function cleanupHLS() {
   }
 }
 
-function cleanupAllPlayers() {
-  // Cleanup HLS
-  cleanupHLS();
-  
-  // Cleanup FLV
-  if (flvPlayer) {
+function cleanupMpegTS() {
+  if (mpegtsPlayer) {
     try {
-      flvPlayer.pause();
-      flvPlayer.unload();
-      flvPlayer.detachMediaElement();
-      flvPlayer.destroy();
+      mpegtsPlayer.pause();
+      mpegtsPlayer.unload();
+      mpegtsPlayer.detachMediaElement();
+      mpegtsPlayer.destroy();
     } catch (e) {}
-    flvPlayer = null;
-  }
-  
-  // Cleanup SoloFleet
-  cleanupSoloFleetStream();
-}
-
-// Stream SoloFleet video via WebSocket + JMuxer
-function streamSoloFleet(imei, channel, vehicleName) {
-  const player = document.getElementById("videoPlayer");
-  const info = document.getElementById("videoInfo");
-
-  // Cleanup previous
-  cleanupSoloFleetStream();
-
-  info.textContent = `${vehicleName} - Camera ${channel} (Connecting to SoloFleet...)`;
-
-  // Load JMuxer dynamically if not already loaded
-  if (typeof JMuxer === "undefined") {
-    const script = document.createElement("script");
-    script.src =
-      "https://cdn.jsdelivr.net/npm/jmuxer@2.0.5/dist/jmuxer.min.js";
-    script.onload = () => {
-      console.log("JMuxer loaded");
-      initSoloFleetStream(imei, channel, vehicleName);
-    };
-    script.onerror = () => {
-      info.textContent = `${vehicleName} - Camera ${channel} (Failed to load player)`;
-    };
-    document.head.appendChild(script);
-  } else {
-    initSoloFleetStream(imei, channel, vehicleName);
-  }
-}
-
-function initSoloFleetStream(imei, channel, vehicleName) {
-  const player = document.getElementById("videoPlayer");
-  const info = document.getElementById("videoInfo");
-
-  try {
-    // Initialize JMuxer
-    sfJmuxer = new JMuxer({
-      node: "videoPlayer",
-      mode: "video",
-      flushingTime: 1000,
-      clearBuffer: true,
-      fps: 15,
-      debug: false,
-      onError: function (data) {
-        console.error("JMuxer error:", data);
-      },
-    });
-
-    // Connect WebSocket to our proxy
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/api/video/sf-stream/${imei}/${channel}`;
-    console.log("SoloFleet WS URL:", wsUrl);
-
-    sfWebSocket = new WebSocket(wsUrl);
-    sfWebSocket.binaryType = "arraybuffer";
-
-    let framesReceived = 0;
-
-    sfWebSocket.onopen = () => {
-      console.log("SoloFleet WS connected");
-      info.textContent = `${vehicleName} - Camera ${channel} (Waiting for stream...)`;
-    };
-
-    sfWebSocket.onmessage = (event) => {
-      framesReceived++;
-      const data = new Uint8Array(event.data);
-
-      sfJmuxer.feed({
-        video: data,
-      });
-
-      if (framesReceived === 1) {
-        info.textContent = `${vehicleName} - Camera ${channel} (Live - SoloFleet)`;
-        player.play().catch(() => {});
-      }
-
-      // Update frame counter periodically
-      if (framesReceived % 100 === 0) {
-        console.log(`SoloFleet stream: ${framesReceived} frames received`);
-      }
-    };
-
-    sfWebSocket.onerror = (err) => {
-      console.error("SoloFleet WS error:", err);
-      info.textContent = `${vehicleName} - Camera ${channel} (Connection Error)`;
-    };
-
-    sfWebSocket.onclose = (event) => {
-      console.log("SoloFleet WS closed:", event.code, event.reason);
-      if (framesReceived === 0) {
-        info.textContent = `${vehicleName} - Camera ${channel} (Stream Unavailable - DVR may be offline)`;
-      }
-    };
-  } catch (err) {
-    console.error("SoloFleet stream init error:", err);
-    info.textContent = `${vehicleName} - Camera ${channel} (Init Error)`;
+    mpegtsPlayer = null;
   }
 }
 
@@ -825,72 +1008,25 @@ function cleanupSoloFleetStream() {
   }
 }
 
-// Stream FLV video
-function streamFLV(imei, channel, vehicleName) {
+function cleanupAllPlayers() {
+  cleanupHLS();
+  cleanupMpegTS();
+  cleanupSoloFleetStream();
+
+  // Also reset the video element
   const player = document.getElementById("videoPlayer");
-  const info = document.getElementById("videoInfo");
-
-  // Destroy previous player
-  if (flvPlayer) {
-    try {
-      flvPlayer.pause();
-      flvPlayer.unload();
-      flvPlayer.detachMediaElement();
-      flvPlayer.destroy();
-      flvPlayer = null;
-    } catch (err) {
-      console.error("Error destroying previous player:", err);
-    }
-  }
-
-  const streamUrl = `/api/video/stream/${imei}/${channel}`;
-  console.log("Stream URL:", streamUrl);
-
-  info.textContent = `${vehicleName} - Camera ${channel} (Connecting...)`;
-
-  try {
-    flvPlayer = flvjs.createPlayer({
-      type: "flv",
-      url: streamUrl,
-      isLive: true,
-      hasAudio: false,
-      cors: true,
-    });
-
-    flvPlayer.attachMediaElement(player);
-    flvPlayer.load();
-
-    flvPlayer.on(flvjs.Events.ERROR, (errorType, errorDetail) => {
-      console.error("FLV Error:", errorType, errorDetail);
-      info.textContent = `${vehicleName} - Camera ${channel} (Error: ${errorDetail})`;
-    });
-
-    flvPlayer
-      .play()
-      .then(() => {
-        console.log("Playing");
-        info.textContent = `${vehicleName} - Camera ${channel} (Live)`;
-      })
-      .catch((err) => {
-        console.error("Play error:", err);
-        info.textContent = `${vehicleName} - Camera ${channel} (Playback Error)`;
-      });
-  } catch (err) {
-    console.error("FLV init error:", err);
-    info.textContent = `${vehicleName} - Camera ${channel} (Init Error)`;
+  if (player) {
+    player.pause();
+    player.removeAttribute("src");
+    player.load(); // Reset media element
   }
 }
 
-// Update close video function
+// ── Close video modal ─────────────────────────────────────
 function closeVideo() {
   const modal = document.getElementById("videoModal");
-  const player = document.getElementById("videoPlayer");
-
-  // Cleanup all players
   cleanupAllPlayers();
-
-  player.pause();
-  player.src = "";
+  currentStreamAttempt = 0;
   modal.classList.remove("active");
 }
 
