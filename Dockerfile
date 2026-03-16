@@ -33,9 +33,4 @@ USER pwuser
 EXPOSE 8008
 
 CMD export PUPPETEER_EXECUTABLE_PATH=$(ls -d /ms-playwright/chromium-*/chrome-linux/chrome | head -n1) && \
-    echo "🧹 Cleaning stale Chrome locks..." && \
-    rm -f /app/chrome-session/SingletonLock /app/chrome-session/SingletonSocket /app/chrome-session/SingletonCookie /app/chrome-session/DevToolsActivePort 2>/dev/null; \
-    rm -f /app/chrome-session/Default/SingletonLock 2>/dev/null; \
-    pkill -9 -f 'chrome-linux/chrome' 2>/dev/null; \
-    sleep 1 && \
     node index.js

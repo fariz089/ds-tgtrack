@@ -2008,24 +2008,6 @@ async function main() {
   try {
     console.log("🚀 Starting DS-TGTrack Monitor Service...\n");
     
-    // Clean up stale Chrome lock files (for auto-restart retries within same process)
-    const fs = require("fs");
-    const { execSync } = require("child_process");
-    const sessionDir = path.join(__dirname, "chrome-session");
-    
-    try {
-      // Kill any Chrome processes from previous failed attempt
-      execSync("pkill -9 -f 'chrome-linux/chrome' 2>/dev/null", { stdio: "ignore", timeout: 5000 });
-      await sleep(2000);
-    } catch (e) { /* fine */ }
-    
-    // Remove lock files
-    const lockFiles = ["SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort"];
-    for (const fname of lockFiles) {
-      try { fs.unlinkSync(path.join(sessionDir, fname)); } catch (e) { /* ignore */ }
-    }
-    try { fs.unlinkSync(path.join(sessionDir, "Default", "SingletonLock")); } catch (e) { /* ignore */ }
-    
     console.log("launching browser dengan persistent session...");
     browser = await puppeteer.launch(config.browser);
     page = await browser.newPage();
@@ -2520,13 +2502,6 @@ async function main() {
         console.error("⚠ Error closing browser:", closeErr.message);
       }
     }
-    
-    // Force kill any remaining Chrome processes to prevent lock on next restart
-    try {
-      const { execSync } = require("child_process");
-      execSync("pkill -9 -f 'chrome-linux/chrome' 2>/dev/null", { stdio: "ignore", timeout: 5000 });
-      execSync("pkill -9 -f '/ms-playwright/' 2>/dev/null", { stdio: "ignore", timeout: 5000 });
-    } catch (e) { /* fine */ }
   }
 }
 

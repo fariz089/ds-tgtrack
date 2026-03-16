@@ -618,8 +618,11 @@ function openCamera(imei, channel, vehicleName) {
   cleanupAllPlayers();
   currentStreamAttempt = 0;
   player.src = "";
+  player.style.display = "";
+  player.poster = "";
 
-  info.textContent = `${vehicleName} - Camera ${channel} (Loading...)`;
+  // Show loading state with spinner
+  info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - Camera ${channel} (Menghubungkan...)`;
   modal.classList.add("active");
 
   // Step 1: Check camera source and get stream URLs
@@ -633,10 +636,8 @@ function openCamera(imei, channel, vehicleName) {
 
       if (data.source === "carcentro") {
         // CarCentro: redirect to portal
-        info.textContent = `${vehicleName} - Camera ${channel} (Opening CarCentro portal...)`;
         player.style.display = "none";
-        const infoEl = document.getElementById("videoInfo");
-        infoEl.innerHTML = `
+        info.innerHTML = `
           <div style="text-align:center;padding:30px;">
             <i class="fas fa-external-link-alt" style="font-size:36px;color:#0066a1;margin-bottom:15px;display:block;"></i>
             <div style="font-size:16px;font-weight:600;margin-bottom:10px;">${vehicleName} - CCTV</div>
@@ -653,10 +654,27 @@ function openCamera(imei, channel, vehicleName) {
       }
 
       if (!data.available && !data.is_present) {
-        info.textContent = `${vehicleName} - Camera ${channel} (Camera offline atau tidak tersedia)`;
+        // Show clear offline state
+        player.style.display = "none";
+        info.innerHTML = `
+          <div style="text-align:center;padding:40px;">
+            <i class="fas fa-video-slash" style="font-size:48px;color:#666;margin-bottom:15px;display:block;"></i>
+            <div style="font-size:16px;font-weight:600;margin-bottom:8px;">${vehicleName} - Camera ${channel}</div>
+            <div style="font-size:13px;color:#999;margin-bottom:20px;">
+              Camera offline atau tidak tersedia.<br>Pastikan device menyala dan terhubung ke jaringan.
+            </div>
+            <button onclick="closeVideo(); setTimeout(() => openCamera('${imei}', ${channel}, '${vehicleName}'), 300);"
+               style="padding:10px 20px;background:#0066a1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">
+              <i class="fas fa-redo"></i> Coba Lagi
+            </button>
+          </div>
+        `;
         return;
       }
 
+      // Device available — proceed to stream
+      player.style.display = "";
+      
       if (data.source === "solofleet") {
         // SoloFleet: WebSocket + JMuxer (H.264 raw)
         streamSoloFleet(imei, channel, vehicleName);
@@ -667,7 +685,20 @@ function openCamera(imei, channel, vehicleName) {
     })
     .catch((err) => {
       console.error("[Camera] Check error:", err);
-      info.textContent = `${vehicleName} - Camera ${channel} (Gagal koneksi ke server: ${err.message})`;
+      player.style.display = "none";
+      info.innerHTML = `
+        <div style="text-align:center;padding:40px;">
+          <i class="fas fa-exclamation-triangle" style="font-size:48px;color:#ef4444;margin-bottom:15px;display:block;"></i>
+          <div style="font-size:16px;font-weight:600;margin-bottom:8px;">${vehicleName} - Camera ${channel}</div>
+          <div style="font-size:13px;color:#999;margin-bottom:20px;">
+            Gagal terhubung ke server: ${err.message}
+          </div>
+          <button onclick="closeVideo(); setTimeout(() => openCamera('${imei}', ${channel}, '${vehicleName}'), 300);"
+             style="padding:10px 20px;background:#0066a1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">
+            <i class="fas fa-redo"></i> Coba Lagi
+          </button>
+        </div>
+      `;
     });
 }
 
@@ -917,36 +948,51 @@ function streamMpegTS_FLV(imei, channel, vehicleName, streamData) {
     player.setAttribute("playsinline", "");
     player.setAttribute("autoplay", "");
     
-    mpegtsPlayer
-      .play()
-      .then(() => {
-        playbackStarted = true;
-        clearTimeout(loadTimeout);
-        console.log("[mpegts] Playing (muted for autoplay)!");
-        info.textContent = `${vehicleName} - Camera ${channel} (Live - FLV)`;
-        
-        // Try to unmute after a short delay (some browsers allow after user gesture)
-        setTimeout(() => {
-          player.muted = false;
-        }, 500);
-      })
-      .catch((err) => {
-        console.error("[mpegts] Play error even muted:", err);
-        clearTimeout(loadTimeout);
-        // Last resort: click to play
-        info.textContent = `${vehicleName} - Camera ${channel} (Klik video untuk play)`;
-        player.addEventListener(
-          "click",
-          () => {
-            player.muted = true;
-            player.play().then(() => {
-              info.textContent = `${vehicleName} - Camera ${channel} (Live - FLV)`;
-              setTimeout(() => { player.muted = false; }, 500);
-            }).catch(() => {});
-          },
-          { once: true }
-        );
-      });
+    // Use the video element's play(), not mpegtsPlayer.play()
+    // mpegts.js feeds data into the video element via MSE
+    const tryPlay = () => {
+      player.play()
+        .then(() => {
+          playbackStarted = true;
+          clearTimeout(loadTimeout);
+          console.log("[mpegts] Playing (muted for autoplay)!");
+          info.textContent = `${vehicleName} - Camera ${channel} (Live - FLV)`;
+          
+          // Try to unmute after a short delay
+          setTimeout(() => { player.muted = false; }, 500);
+        })
+        .catch((err) => {
+          console.warn("[mpegts] Play blocked:", err.message);
+          clearTimeout(loadTimeout);
+          // Show click-to-play overlay
+          info.innerHTML = `${vehicleName} - Camera ${channel} <span style="color:#f59e0b;cursor:pointer;text-decoration:underline;" onclick="document.getElementById('videoPlayer').play().then(()=>{document.getElementById('videoInfo').textContent='${vehicleName} - Camera ${channel} (Live - FLV)';}).catch(()=>{});">▶ Klik di sini atau pada video untuk play</span>`;
+          
+          player.addEventListener(
+            "click",
+            () => {
+              player.muted = true;
+              // Re-check if mpegts is still connected, reload if needed
+              if (!mpegtsPlayer) {
+                // Player was destroyed, re-init
+                streamMpegTS_FLV(imei, channel, vehicleName, streamData || {});
+                return;
+              }
+              player.play().then(() => {
+                info.textContent = `${vehicleName} - Camera ${channel} (Live - FLV)`;
+                setTimeout(() => { player.muted = false; }, 500);
+              }).catch(() => {
+                // Final fallback: full re-init
+                cleanupMpegTS();
+                streamMpegTS_FLV(imei, channel, vehicleName, streamData || {});
+              });
+            },
+            { once: true }
+          );
+        });
+    };
+
+    // Small delay to let mpegts buffer some data before play attempt
+    setTimeout(tryPlay, 500);
   } catch (err) {
     console.error("[mpegts] Init error:", err);
     info.textContent = `${vehicleName} - Camera ${channel} (Init Error: ${err.message})`;
@@ -956,12 +1002,13 @@ function streamMpegTS_FLV(imei, channel, vehicleName, streamData) {
 // ── FLV Error handler with retry logic ────────────────────
 function handleFLVError(imei, channel, vehicleName, errorMsg) {
   const info = document.getElementById("videoInfo");
+  const player = document.getElementById("videoPlayer");
 
   currentStreamAttempt++;
 
   if (currentStreamAttempt <= MAX_STREAM_RETRIES) {
     console.log(`[mpegts] Retry attempt ${currentStreamAttempt}/${MAX_STREAM_RETRIES}`);
-    info.textContent = `${vehicleName} - Camera ${channel} (Reconnecting... ${currentStreamAttempt}/${MAX_STREAM_RETRIES})`;
+    info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - Camera ${channel} (Reconnecting... ${currentStreamAttempt}/${MAX_STREAM_RETRIES})`;
 
     cleanupMpegTS();
 
@@ -974,7 +1021,18 @@ function handleFLVError(imei, channel, vehicleName, errorMsg) {
           if (data.available || data.is_present) {
             streamMpegTS_FLV(imei, channel, vehicleName, data);
           } else {
-            info.textContent = `${vehicleName} - Camera ${channel} (Camera offline)`;
+            player.style.display = "none";
+            info.innerHTML = `
+              <div style="text-align:center;padding:40px;">
+                <i class="fas fa-video-slash" style="font-size:48px;color:#666;margin-bottom:15px;display:block;"></i>
+                <div style="font-size:16px;font-weight:600;margin-bottom:8px;">${vehicleName} - Camera ${channel}</div>
+                <div style="font-size:13px;color:#999;margin-bottom:20px;">Camera offline</div>
+                <button onclick="closeVideo(); setTimeout(() => openCamera('${imei}', ${channel}, '${vehicleName}'), 300);"
+                   style="padding:10px 20px;background:#0066a1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">
+                  <i class="fas fa-redo"></i> Coba Lagi
+                </button>
+              </div>
+            `;
           }
         })
         .catch(() => {
@@ -983,7 +1041,20 @@ function handleFLVError(imei, channel, vehicleName, errorMsg) {
         });
     }, 2000 * currentStreamAttempt);
   } else {
-    info.textContent = `${vehicleName} - Camera ${channel} (Gagal terhubung setelah ${MAX_STREAM_RETRIES}x percobaan: ${errorMsg})`;
+    // All retries exhausted — show clear failure UI with retry button
+    player.style.display = "none";
+    info.innerHTML = `
+      <div style="text-align:center;padding:40px;">
+        <i class="fas fa-exclamation-circle" style="font-size:48px;color:#ef4444;margin-bottom:15px;display:block;"></i>
+        <div style="font-size:16px;font-weight:600;margin-bottom:8px;">${vehicleName} - Camera ${channel}</div>
+        <div style="font-size:13px;color:#999;margin-bottom:5px;">Gagal terhubung setelah ${MAX_STREAM_RETRIES}x percobaan</div>
+        <div style="font-size:11px;color:#666;margin-bottom:20px;">${errorMsg}</div>
+        <button onclick="currentStreamAttempt=0; closeVideo(); setTimeout(() => openCamera('${imei}', ${channel}, '${vehicleName}'), 300);"
+           style="padding:10px 20px;background:#0066a1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">
+          <i class="fas fa-redo"></i> Coba Lagi
+        </button>
+      </div>
+    `;
   }
 }
 
