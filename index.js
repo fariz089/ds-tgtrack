@@ -1348,7 +1348,7 @@ const CC_AUTH_TOKEN = config.carcentro.username && config.carcentro.password
   ? Buffer.from(JSON.stringify({ name: config.carcentro.username, pwd: config.carcentro.password })).toString("base64")
   : "";
 
-// Proxy: Login (server-side, returns session info)
+// Proxy: Login — handle both API call and page navigation
 app.get("/cc-proxy/login", async (req, res) => {
   try {
     const localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
@@ -1359,14 +1359,35 @@ app.get("/cc-proxy/login", async (req, res) => {
       _: Date.now().toString(),
     });
 
-    const resp = await axios.get(`${CC_BASE_URL}/AoooG_WebService.svc/Login?${loginParams}`, {
+    const loginUrl = `${CC_BASE_URL}/AoooG_WebService.svc/Login?${loginParams}`;
+
+    // Check if this is an API call or a page navigation
+    const wantsJson = (req.headers.accept || "").includes("json");
+
+    const resp = await axios.get(loginUrl, {
       headers: { Accept: "*/*", "User-Agent": "Mozilla/5.0" },
       timeout: 15000,
     });
-    res.json({ ok: true, data: resp.data });
+
+    if (wantsJson) {
+      res.json({ ok: true, data: resp.data });
+    } else {
+      // Page navigation — do login then redirect to portal
+      res.redirect(302, "/cc-proxy/portal");
+    }
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    const wantsJson = (req.headers.accept || "").includes("json");
+    if (wantsJson) {
+      res.status(500).json({ ok: false, error: err.message });
+    } else {
+      res.redirect(302, "/cc-proxy/portal");
+    }
   }
+});
+
+// Handle bare /login (portal JS redirects here without /cc-proxy prefix)
+app.get("/login", (req, res) => {
+  res.redirect(302, "/cc-proxy/login");
 });
 
 // Proxy: Video config for device
@@ -1454,7 +1475,6 @@ app.get("/cc-proxy/assets/*", async (req, res) => {
 });
 
 // Proxy: CarCentro main portal page (for iframe embedding)
-// Fetches the portal HTML and rewrites URLs to go through our proxy
 app.get("/cc-proxy/portal", async (req, res) => {
   try {
     const resp = await axios.get(`${CC_BASE_URL}/`, {
@@ -1468,37 +1488,59 @@ app.get("/cc-proxy/portal", async (req, res) => {
 
     let html = resp.data;
 
-    // Rewrite all absolute URLs to go through our proxy
-    // Replace http://carcentro.aooog.com with /cc-proxy
+    // Rewrite absolute URLs
     html = html.replace(/http:\/\/carcentro\.aooog\.com/g, "/cc-proxy");
-    // Replace relative paths to assets
-    html = html.replace(/href="\/assets\//g, 'href="/cc-proxy/assets/');
-    html = html.replace(/src="\/assets\//g, 'src="/cc-proxy/assets/');
+    // Rewrite all root-relative paths to go through proxy
+    html = html.replace(/(href|src|action)="\/(?!cc-proxy)/g, '$1="/cc-proxy/');
+    // Rewrite unquoted root paths in JS: '/login' '/assets/' etc
+    html = html.replace(/['"]\/login['"]/g, '"/cc-proxy/login"');
+    html = html.replace(/['"]\/assets\//g, '"/cc-proxy/assets/');
+    // Rewrite relative asset paths
     html = html.replace(/href="assets\//g, 'href="/cc-proxy/assets/');
     html = html.replace(/src="assets\//g, 'src="/cc-proxy/assets/');
     // Rewrite API endpoints
     html = html.replace(/\/AoooG_WebService\.svc\//g, "/cc-proxy/AoooG_WebService.svc/");
     // Rewrite WebSocket URL for live streaming
-    html = html.replace(/wss?:\/\/live\.aooog\.com:9661\/?/g,
-      `${req.protocol === "https" ? "wss" : "ws"}://${req.get("host")}/cc-proxy/ws`);
+    const wsProxyUrl = `${req.protocol === "https" ? "wss" : "ws"}://${req.get("host")}/cc-proxy/ws`;
+    html = html.replace(/wss?:\/\/live\.aooog\.com:9661\/?/g, wsProxyUrl);
+    html = html.replace(/["']wss?:\/\/live\.aooog\.com:9661\/?["']/g, `"${wsProxyUrl}"`);
 
-    // Remove X-Frame-Options if set, allow iframe embedding
+    // Inject a base tag and override to catch any remaining absolute paths
+    // Also remove any CSP meta tags that would block our scripts
+    html = html.replace(/<head>/i, `<head>
+<base href="/cc-proxy/">
+<script>
+// Override navigation to /login -> /cc-proxy/login
+(function(){
+  var origAssign = Object.getOwnPropertyDescriptor(Location.prototype, 'href');
+  // Intercept window.location changes
+  if (window.location.pathname === '/login') {
+    window.location.replace('/cc-proxy/login');
+  }
+})();
+</script>`);
+
+    // Remove CSP meta tags
+    html = html.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
+    // Remove X-Frame-Options meta
+    html = html.replace(/<meta[^>]*x-frame-options[^>]*>/gi, '');
+
     res.set("Content-Type", "text/html; charset=utf-8");
+    // Allow iframe embedding, no CSP restrictions
     res.set("X-Frame-Options", "SAMEORIGIN");
+    res.removeHeader("Content-Security-Policy");
     res.send(html);
   } catch (err) {
     res.status(500).send(`<html><body>Failed to load CarCentro portal: ${err.message}</body></html>`);
   }
 });
 
-// Proxy: Catch-all for other CarCentro paths (CSS, JS loaded by portal)
-app.get("/cc-proxy/*", async (req, res) => {
-  // Skip already-handled routes
-  if (req.path.startsWith("/cc-proxy/login") ||
+// Proxy: Catch-all for other CarCentro paths (CSS, JS, HTML loaded by portal)
+app.all("/cc-proxy/*", async (req, res) => {
+  // Skip routes that have their own handlers
+  if (req.path === "/cc-proxy/login" ||
       req.path.startsWith("/cc-proxy/video-config") ||
-      req.path.startsWith("/cc-proxy/assets") ||
-      req.path.startsWith("/cc-proxy/portal") ||
-      req.path.startsWith("/cc-proxy/AoooG_WebService")) {
+      req.path === "/cc-proxy/portal") {
     return res.status(404).send("Not found");
   }
 
@@ -1506,22 +1548,62 @@ app.get("/cc-proxy/*", async (req, res) => {
     const targetPath = req.path.replace("/cc-proxy", "");
     const targetUrl = `${CC_BASE_URL}${targetPath}`;
 
-    const resp = await axios.get(targetUrl, {
+    const axiosOpts = {
+      method: req.method,
+      url: targetUrl,
       responseType: "arraybuffer",
       timeout: 30000,
-      headers: { "User-Agent": "Mozilla/5.0", Referer: CC_BASE_URL + "/" },
-    });
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        Referer: CC_BASE_URL + "/",
+      },
+    };
 
-    const ct = resp.headers["content-type"] || "application/octet-stream";
+    // Forward body for POST/PUT
+    if (req.method === "POST" || req.method === "PUT") {
+      axiosOpts.data = req.body;
+      axiosOpts.headers["Content-Type"] = req.headers["content-type"] || "application/json";
+    }
+
+    // Forward Accept header
+    if (req.headers.accept) {
+      axiosOpts.headers["Accept"] = req.headers.accept;
+    }
+    if (req.headers["x-requested-with"]) {
+      axiosOpts.headers["X-Requested-With"] = req.headers["x-requested-with"];
+    }
+
+    const resp = await axios(axiosOpts);
+
+    let ct = resp.headers["content-type"] || "application/octet-stream";
+
+    // Fix MIME type based on file extension (some servers send wrong type)
+    if (req.path.endsWith(".css")) ct = "text/css; charset=utf-8";
+    if (req.path.endsWith(".js")) ct = "application/javascript; charset=utf-8";
+    if (req.path.endsWith(".wasm")) ct = "application/wasm";
+    if (req.path.endsWith(".svg")) ct = "image/svg+xml";
+
     res.set("Content-Type", ct);
+    // Remove CSP from proxied responses
+    res.removeHeader("Content-Security-Policy");
 
-    // If JS file, rewrite URLs inside it
-    if (ct.includes("javascript")) {
+    // Rewrite URLs in JS files
+    if (ct.includes("javascript") || req.path.endsWith(".js")) {
       let js = Buffer.from(resp.data).toString("utf8");
       js = js.replace(/http:\/\/carcentro\.aooog\.com/g, "/cc-proxy");
       js = js.replace(/wss?:\/\/live\.aooog\.com:9661\/?/g,
         `wss://${req.get("host")}/cc-proxy/ws`);
+      js = js.replace(/"\/login"/g, '"/cc-proxy/login"');
+      js = js.replace(/'\/login'/g, "'/cc-proxy/login'");
+      js = js.replace(/"\/AoooG_WebService/g, '"/cc-proxy/AoooG_WebService');
+      js = js.replace(/'\/AoooG_WebService/g, "'/cc-proxy/AoooG_WebService");
       res.send(js);
+    } else if (ct.includes("css") || req.path.endsWith(".css")) {
+      let css = Buffer.from(resp.data).toString("utf8");
+      css = css.replace(/url\(["']?(?:http:\/\/carcentro\.aooog\.com)?\/assets\//g, 'url("/cc-proxy/assets/');
+      res.send(css);
+    } else if (ct.includes("json")) {
+      res.send(Buffer.from(resp.data));
     } else {
       res.send(Buffer.from(resp.data));
     }
