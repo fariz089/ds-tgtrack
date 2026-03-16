@@ -2013,27 +2013,41 @@ async function main() {
     const { execSync } = require("child_process");
     const sessionDir = path.join(__dirname, "chrome-session");
     
-    // 1. Kill any lingering Chrome/Chromium processes
+    // 1. Kill ALL chrome-related processes (Playwright Chromium binary path)
     try {
-      execSync("pkill -f 'chrome-session' 2>/dev/null || true", { stdio: "ignore" });
-      execSync("pkill -f chromium 2>/dev/null || true", { stdio: "ignore" });
-      execSync("pkill -f chrome 2>/dev/null || true", { stdio: "ignore" });
+      // Kill by various patterns that match the Playwright chromium binary
+      const killCmds = [
+        "pkill -9 -f 'chrome-linux/chrome' 2>/dev/null",
+        "pkill -9 -f 'chromium' 2>/dev/null", 
+        "pkill -9 -f 'chrome-session' 2>/dev/null",
+        "pkill -9 -f '/ms-playwright/' 2>/dev/null",
+        // Also try killall
+        "killall -9 chrome 2>/dev/null",
+      ];
+      for (const cmd of killCmds) {
+        try { execSync(cmd, { stdio: "ignore", timeout: 5000 }); } catch (e) { /* fine */ }
+      }
       console.log("🧹 Killed stale Chrome processes");
-    } catch (e) { /* no processes to kill, fine */ }
+    } catch (e) { /* no processes to kill */ }
     
-    // 2. Wait a moment for processes to die
-    await sleep(1000);
+    // 2. Wait for processes to fully terminate
+    await sleep(2000);
     
-    // 3. Remove all lock/socket files in chrome-session
-    const lockFiles = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
-    for (const lf of lockFiles) {
-      const fp = path.join(sessionDir, lf);
-      try {
-        if (fs.existsSync(fp)) {
-          fs.unlinkSync(fp);
-          console.log(`🧹 Removed ${lf}`);
-        }
-      } catch (e) { /* ignore */ }
+    // 3. Remove ALL lock/socket/pid files in chrome-session
+    if (fs.existsSync(sessionDir)) {
+      const filesToClean = ["SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort"];
+      for (const fname of filesToClean) {
+        const fp = path.join(sessionDir, fname);
+        try {
+          if (fs.existsSync(fp)) {
+            fs.unlinkSync(fp);
+            console.log(`🧹 Removed ${fname}`);
+          }
+        } catch (e) { /* ignore */ }
+      }
+      // Also clean Default/SingletonLock if exists
+      const defaultLock = path.join(sessionDir, "Default", "SingletonLock");
+      try { if (fs.existsSync(defaultLock)) fs.unlinkSync(defaultLock); } catch (e) { /* ignore */ }
     }
     
     console.log("launching browser dengan persistent session...");
@@ -2523,9 +2537,20 @@ async function main() {
     }
 
     if (browser) {
-      await browser.close();
-      console.log("browser ditutup");
+      try {
+        await browser.close();
+        console.log("browser ditutup");
+      } catch (closeErr) {
+        console.error("⚠ Error closing browser:", closeErr.message);
+      }
     }
+    
+    // Force kill any remaining Chrome processes to prevent lock on next restart
+    try {
+      const { execSync } = require("child_process");
+      execSync("pkill -9 -f 'chrome-linux/chrome' 2>/dev/null", { stdio: "ignore", timeout: 5000 });
+      execSync("pkill -9 -f '/ms-playwright/' 2>/dev/null", { stdio: "ignore", timeout: 5000 });
+    } catch (e) { /* fine */ }
   }
 }
 
