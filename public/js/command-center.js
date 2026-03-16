@@ -734,20 +734,13 @@ function openCarCentroCCTV(imei, channel, vehicleName, channelName) {
 }
 
 // ── TGTrack stream strategy ───────────────────────────────
-// Priority: 1) HLS/M3U8  2) FLV via mpegts.js  3) HTTP-FLV direct
+// Always use HTTP-FLV proxy — direct HLS/WS to TGTrack gateway is blocked by CORS
 function startTGTrackStream(streamData, imei, channel, vehicleName) {
   const info = document.getElementById("videoInfo");
 
-  // Priority 1: HLS (M3U8) — best quality, CDN-backed
-  if (streamData.m3u8) {
-    console.log("[Camera] Trying HLS first:", streamData.m3u8);
-    streamHLS(streamData.m3u8, imei, channel, vehicleName, streamData);
-    return;
-  }
-
-  // Priority 2: FLV via mpegts.js proxy
-  if (streamData.http || streamData.ws) {
-    console.log("[Camera] No M3U8, trying FLV via mpegts.js");
+  // Check if device has any stream available (regardless of protocol)
+  if (streamData.http || streamData.ws || streamData.m3u8 || streamData.is_present) {
+    console.log("[Camera] Stream available, using HTTP-FLV proxy");
     streamMpegTS_FLV(imei, channel, vehicleName, streamData);
     return;
   }
@@ -870,22 +863,12 @@ function streamMpegTS_FLV(imei, channel, vehicleName, streamData) {
     return;
   }
 
-  // Use WS (WebSocket-FLV) if available, otherwise HTTP-FLV proxy
-  let streamUrl;
-  let useWebSocket = false;
+  // ALWAYS use HTTP-FLV via our proxy — direct WS/HLS to TGTrack gateway
+  // is blocked by CORS (origin adas.j99t.tech not allowed by livedvr.tripsdd.com)
+  let streamUrl = `/api/video/stream/${imei}/${channel}`;
+  console.log("[mpegts] Using HTTP-FLV proxy:", streamUrl);
 
-  if (streamData && streamData.ws) {
-    // Direct WebSocket FLV from TGTrack gateway (lowest latency)
-    streamUrl = streamData.ws;
-    useWebSocket = true;
-    console.log("[mpegts] Using WebSocket-FLV:", streamUrl);
-  } else {
-    // HTTP-FLV via our proxy
-    streamUrl = `/api/video/stream/${imei}/${channel}`;
-    console.log("[mpegts] Using HTTP-FLV proxy:", streamUrl);
-  }
-
-  info.textContent = `${vehicleName} - Camera ${channel} (Connecting FLV...)`;
+  info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - Camera ${channel} (Connecting FLV...)`;
 
   try {
     const playerConfig = {
@@ -895,12 +878,6 @@ function streamMpegTS_FLV(imei, channel, vehicleName, streamData) {
       cors: true,
       url: streamUrl,
     };
-
-    // If WebSocket URL, adjust config
-    if (useWebSocket) {
-      playerConfig.type = "flv";
-      playerConfig.url = streamUrl;
-    }
 
     mpegtsPlayer = mpegts.createPlayer(playerConfig, {
       // mpegts.js specific config for low latency
