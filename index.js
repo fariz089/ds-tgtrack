@@ -1425,14 +1425,106 @@ app.get("/cc-proxy/assets/*", async (req, res) => {
     const resp = await axios.get(targetUrl, {
       responseType: "arraybuffer",
       timeout: 30000,
-      headers: { "User-Agent": "Mozilla/5.0" },
+      headers: { "User-Agent": "Mozilla/5.0", Referer: CC_BASE_URL + "/" },
     });
 
-    // Forward content type
     const ct = resp.headers["content-type"] || "application/octet-stream";
     res.set("Content-Type", ct);
-    res.set("Cache-Control", "public, max-age=3600"); // Cache 1h
-    res.send(Buffer.from(resp.data));
+    res.set("Cache-Control", "public, max-age=3600");
+
+    // Rewrite URLs in JS files so they go through our proxy
+    if (ct.includes("javascript") || req.path.endsWith(".js")) {
+      let js = Buffer.from(resp.data).toString("utf8");
+      js = js.replace(/http:\/\/carcentro\.aooog\.com/g, "/cc-proxy");
+      js = js.replace(/wss?:\/\/live\.aooog\.com:9661\/?/g,
+        `wss://${req.get("host")}/cc-proxy/ws`);
+      // Fix importScripts paths for Web Workers
+      js = js.replace(/importScripts\("(?!\/cc-proxy)/g, 'importScripts("/cc-proxy/assets/aooog/script/');
+      res.send(js);
+    } else if (ct.includes("css") || req.path.endsWith(".css")) {
+      let css = Buffer.from(resp.data).toString("utf8");
+      css = css.replace(/url\(["']?(?:http:\/\/carcentro\.aooog\.com)?\/assets\//g, 'url("/cc-proxy/assets/');
+      res.send(css);
+    } else {
+      res.send(Buffer.from(resp.data));
+    }
+  } catch (err) {
+    res.status(err.response?.status || 500).send("Proxy error");
+  }
+});
+
+// Proxy: CarCentro main portal page (for iframe embedding)
+// Fetches the portal HTML and rewrites URLs to go through our proxy
+app.get("/cc-proxy/portal", async (req, res) => {
+  try {
+    const resp = await axios.get(`${CC_BASE_URL}/`, {
+      headers: {
+        Accept: "text/html",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      },
+      timeout: 20000,
+      responseType: "text",
+    });
+
+    let html = resp.data;
+
+    // Rewrite all absolute URLs to go through our proxy
+    // Replace http://carcentro.aooog.com with /cc-proxy
+    html = html.replace(/http:\/\/carcentro\.aooog\.com/g, "/cc-proxy");
+    // Replace relative paths to assets
+    html = html.replace(/href="\/assets\//g, 'href="/cc-proxy/assets/');
+    html = html.replace(/src="\/assets\//g, 'src="/cc-proxy/assets/');
+    html = html.replace(/href="assets\//g, 'href="/cc-proxy/assets/');
+    html = html.replace(/src="assets\//g, 'src="/cc-proxy/assets/');
+    // Rewrite API endpoints
+    html = html.replace(/\/AoooG_WebService\.svc\//g, "/cc-proxy/AoooG_WebService.svc/");
+    // Rewrite WebSocket URL for live streaming
+    html = html.replace(/wss?:\/\/live\.aooog\.com:9661\/?/g,
+      `${req.protocol === "https" ? "wss" : "ws"}://${req.get("host")}/cc-proxy/ws`);
+
+    // Remove X-Frame-Options if set, allow iframe embedding
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.set("X-Frame-Options", "SAMEORIGIN");
+    res.send(html);
+  } catch (err) {
+    res.status(500).send(`<html><body>Failed to load CarCentro portal: ${err.message}</body></html>`);
+  }
+});
+
+// Proxy: Catch-all for other CarCentro paths (CSS, JS loaded by portal)
+app.get("/cc-proxy/*", async (req, res) => {
+  // Skip already-handled routes
+  if (req.path.startsWith("/cc-proxy/login") ||
+      req.path.startsWith("/cc-proxy/video-config") ||
+      req.path.startsWith("/cc-proxy/assets") ||
+      req.path.startsWith("/cc-proxy/portal") ||
+      req.path.startsWith("/cc-proxy/AoooG_WebService")) {
+    return res.status(404).send("Not found");
+  }
+
+  try {
+    const targetPath = req.path.replace("/cc-proxy", "");
+    const targetUrl = `${CC_BASE_URL}${targetPath}`;
+
+    const resp = await axios.get(targetUrl, {
+      responseType: "arraybuffer",
+      timeout: 30000,
+      headers: { "User-Agent": "Mozilla/5.0", Referer: CC_BASE_URL + "/" },
+    });
+
+    const ct = resp.headers["content-type"] || "application/octet-stream";
+    res.set("Content-Type", ct);
+
+    // If JS file, rewrite URLs inside it
+    if (ct.includes("javascript")) {
+      let js = Buffer.from(resp.data).toString("utf8");
+      js = js.replace(/http:\/\/carcentro\.aooog\.com/g, "/cc-proxy");
+      js = js.replace(/wss?:\/\/live\.aooog\.com:9661\/?/g,
+        `wss://${req.get("host")}/cc-proxy/ws`);
+      res.send(js);
+    } else {
+      res.send(Buffer.from(resp.data));
+    }
   } catch (err) {
     res.status(err.response?.status || 500).send("Proxy error");
   }
