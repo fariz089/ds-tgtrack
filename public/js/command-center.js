@@ -305,14 +305,58 @@ async function openVehicleModal(vehicleName, imei) {
   document.getElementById("modalVehicleName").textContent = vehicleName;
 
   const cameraGrid = document.getElementById("cameraGridModal");
-  cameraGrid.innerHTML = Array.from(
-    { length: 8 },
-    (_, i) => `
-    <button class="camera-btn-modal" onclick="openCamera('${imei}', ${i + 1}, '${vehicleName}')">
-      <i class="fas fa-video"></i> Camera ${i + 1}
-    </button>
-  `
-  ).join("");
+  cameraGrid.innerHTML = '<div style="text-align:center;padding:10px;color:#999;"><i class="fas fa-spinner fa-spin"></i> Loading cameras...</div>';
+
+  // Check vehicle source to show appropriate camera buttons
+  try {
+    const sourceResp = await fetch(`/api/vehicle-source/${imei}`);
+    const sourceData = await sourceResp.json();
+
+    if (sourceData.source === "carcentro") {
+      // Fetch CarCentro-specific channel config
+      const configResp = await fetch(`/api/carcentro/video-config/${imei}`);
+      const configData = await configResp.json();
+
+      if (configData.channels && configData.channels.length > 0) {
+        cameraGrid.innerHTML = configData.channels.map(ch => `
+          <button class="camera-btn-modal" onclick="openCarCentroCCTV('${imei}', ${ch.channel}, '${vehicleName}', '${ch.name}')" title="${ch.name}">
+            <i class="fas fa-video"></i> ${ch.name}
+          </button>
+        `).join('') + `
+          <div style="margin-top:8px;font-size:11px;color:#999;grid-column:1/-1;text-align:center;">
+            <i class="fas fa-info-circle"></i> CCTV via CarCentro (AoooG) — opens in portal
+          </div>
+        `;
+      } else {
+        cameraGrid.innerHTML = `
+          <div style="text-align:center;padding:15px;color:#999;">
+            <i class="fas fa-video-slash" style="font-size:24px;margin-bottom:8px;display:block;"></i>
+            No camera config available
+          </div>
+        `;
+      }
+    } else {
+      // TGTrack / SoloFleet: show 8 generic camera buttons
+      cameraGrid.innerHTML = Array.from(
+        { length: 8 },
+        (_, i) => `
+        <button class="camera-btn-modal" onclick="openCamera('${imei}', ${i + 1}, '${vehicleName}')">
+          <i class="fas fa-video"></i> Camera ${i + 1}
+        </button>
+      `
+      ).join("");
+    }
+  } catch (err) {
+    // Fallback: show generic 8 cameras
+    cameraGrid.innerHTML = Array.from(
+      { length: 8 },
+      (_, i) => `
+      <button class="camera-btn-modal" onclick="openCamera('${imei}', ${i + 1}, '${vehicleName}')">
+        <i class="fas fa-video"></i> Camera ${i + 1}
+      </button>
+    `
+    ).join("");
+  }
 
   await loadVehicleAlarms2(vehicleName);
 
@@ -587,6 +631,27 @@ function openCamera(imei, channel, vehicleName) {
     .then((data) => {
       console.log("[Camera] Check response:", data);
 
+      if (data.source === "carcentro") {
+        // CarCentro: redirect to portal
+        info.textContent = `${vehicleName} - Camera ${channel} (Opening CarCentro portal...)`;
+        player.style.display = "none";
+        const infoEl = document.getElementById("videoInfo");
+        infoEl.innerHTML = `
+          <div style="text-align:center;padding:30px;">
+            <i class="fas fa-external-link-alt" style="font-size:36px;color:#0066a1;margin-bottom:15px;display:block;"></i>
+            <div style="font-size:16px;font-weight:600;margin-bottom:10px;">${vehicleName} - CCTV</div>
+            <div style="font-size:13px;color:#666;margin-bottom:20px;">
+              Video streaming tersedia melalui CarCentro (AoooG) portal
+            </div>
+            <a href="${data.portal_url}" target="_blank" 
+               style="display:inline-block;padding:12px 24px;background:#0066a1;color:white;border-radius:8px;text-decoration:none;font-weight:600;">
+              <i class="fas fa-external-link-alt"></i> Buka CarCentro Portal
+            </a>
+          </div>
+        `;
+        return;
+      }
+
       if (!data.available && !data.is_present) {
         info.textContent = `${vehicleName} - Camera ${channel} (Camera offline atau tidak tersedia)`;
         return;
@@ -604,6 +669,37 @@ function openCamera(imei, channel, vehicleName) {
       console.error("[Camera] Check error:", err);
       info.textContent = `${vehicleName} - Camera ${channel} (Gagal koneksi ke server: ${err.message})`;
     });
+}
+
+// ── CarCentro CCTV Handler ──────────────────────────────────
+function openCarCentroCCTV(imei, channel, vehicleName, channelName) {
+  console.log(`[CarCentro CCTV] Opening: ${vehicleName} - ${channelName} (ch${channel})`);
+
+  const modal = document.getElementById("videoModal");
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  cleanupAllPlayers();
+  player.src = "";
+  player.style.display = "none";
+
+  info.innerHTML = `
+    <div style="text-align:center;padding:30px;">
+      <i class="fas fa-video" style="font-size:36px;color:#0066a1;margin-bottom:15px;display:block;"></i>
+      <div style="font-size:16px;font-weight:600;margin-bottom:5px;">${vehicleName}</div>
+      <div style="font-size:14px;color:#0066a1;margin-bottom:15px;">${channelName} (Channel ${channel})</div>
+      <div style="font-size:13px;color:#666;margin-bottom:20px;">
+        CCTV streaming untuk bus CarCentro tersedia melalui portal AoooG.<br>
+        Klik tombol di bawah untuk membuka portal.
+      </div>
+      <a href="http://carcentro.aooog.com" target="_blank" 
+         style="display:inline-block;padding:12px 24px;background:linear-gradient(135deg,#0066a1 0%,#003d5c 100%);color:white;border-radius:8px;text-decoration:none;font-weight:600;box-shadow:0 2px 8px rgba(0,102,161,0.3);">
+        <i class="fas fa-external-link-alt"></i> Buka CarCentro CCTV
+      </a>
+    </div>
+  `;
+
+  modal.classList.add("active");
 }
 
 // ── TGTrack stream strategy ───────────────────────────────
@@ -640,6 +736,8 @@ function streamHLS(m3u8Url, imei, channel, vehicleName, streamData) {
   if (player.canPlayType("application/vnd.apple.mpegurl")) {
     console.log("[HLS] Using native Safari HLS");
     player.src = m3u8Url;
+    player.muted = true;
+    player.setAttribute("playsinline", "");
 
     const onLoad = () => {
       info.textContent = `${vehicleName} - Camera ${channel} (Live - HLS)`;
@@ -654,7 +752,9 @@ function streamHLS(m3u8Url, imei, channel, vehicleName, streamData) {
 
     player.addEventListener("loadedmetadata", onLoad);
     player.addEventListener("error", onError);
-    player.play().catch(() => {});
+    player.play().then(() => {
+      setTimeout(() => { player.muted = false; }, 500);
+    }).catch(() => {});
     return;
   }
 
@@ -693,7 +793,11 @@ function streamHLS(m3u8Url, imei, channel, vehicleName, streamData) {
   hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
     clearTimeout(hlsTimeout);
     info.textContent = `${vehicleName} - Camera ${channel} (Live - HLS)`;
-    player.play().catch((err) => console.log("[HLS] Autoplay blocked:", err));
+    player.muted = true;
+    player.setAttribute("playsinline", "");
+    player.play().then(() => {
+      setTimeout(() => { player.muted = false; }, 500);
+    }).catch((err) => console.log("[HLS] Autoplay blocked:", err));
   });
 
   hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
@@ -808,38 +912,40 @@ function streamMpegTS_FLV(imei, channel, vehicleName, streamData) {
       handleFLVError(imei, channel, vehicleName, `${errorType}: ${errorDetail}`);
     });
 
-    // Start playback
+    // Start playback - always mute first for autoplay policy compliance
+    player.muted = true;
+    player.setAttribute("playsinline", "");
+    player.setAttribute("autoplay", "");
+    
     mpegtsPlayer
       .play()
       .then(() => {
         playbackStarted = true;
         clearTimeout(loadTimeout);
-        console.log("[mpegts] Playing!");
+        console.log("[mpegts] Playing (muted for autoplay)!");
         info.textContent = `${vehicleName} - Camera ${channel} (Live - FLV)`;
+        
+        // Try to unmute after a short delay (some browsers allow after user gesture)
+        setTimeout(() => {
+          player.muted = false;
+        }, 500);
       })
       .catch((err) => {
-        console.error("[mpegts] Play error:", err);
-        // Try muted autoplay (browser policy)
-        player.muted = true;
-        player
-          .play()
-          .then(() => {
-            playbackStarted = true;
-            clearTimeout(loadTimeout);
-            info.textContent = `${vehicleName} - Camera ${channel} (Live - FLV 🔇)`;
-          })
-          .catch((err2) => {
-            clearTimeout(loadTimeout);
-            info.textContent = `${vehicleName} - Camera ${channel} (Klik video untuk play)`;
-            // Add click-to-play handler
-            player.addEventListener(
-              "click",
-              () => {
-                player.play().catch(() => {});
-              },
-              { once: true }
-            );
-          });
+        console.error("[mpegts] Play error even muted:", err);
+        clearTimeout(loadTimeout);
+        // Last resort: click to play
+        info.textContent = `${vehicleName} - Camera ${channel} (Klik video untuk play)`;
+        player.addEventListener(
+          "click",
+          () => {
+            player.muted = true;
+            player.play().then(() => {
+              info.textContent = `${vehicleName} - Camera ${channel} (Live - FLV)`;
+              setTimeout(() => { player.muted = false; }, 500);
+            }).catch(() => {});
+          },
+          { once: true }
+        );
       });
   } catch (err) {
     console.error("[mpegts] Init error:", err);
@@ -1025,8 +1131,11 @@ function cleanupAllPlayers() {
 // ── Close video modal ─────────────────────────────────────
 function closeVideo() {
   const modal = document.getElementById("videoModal");
+  const player = document.getElementById("videoPlayer");
   cleanupAllPlayers();
   currentStreamAttempt = 0;
+  // Restore video player visibility (may be hidden by CarCentro CCTV modal)
+  if (player) player.style.display = "";
   modal.classList.remove("active");
 }
 

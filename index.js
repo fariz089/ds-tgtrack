@@ -28,6 +28,7 @@ const CoordinateWorker = require("./coordinateWorker");
 const AlarmStoreWorker = require("./alarmStoreWorker");
 const SoloFleetWorker = require("./solofleetWorker");
 const SoloFleetVideoService = require("./solofleetVideoService");
+const CarCentroWorker = require("./carcentroWorker");
 
 // CORS configuration - allow psgrx from different origins
 const allowedOrigins = [
@@ -909,6 +910,26 @@ app.get("/api/video/check/:imei/:channel", checkVideoAuth, async (req, res) => {
       });
     }
 
+    // Check if this is a CarCentro device (IMEI matches CarCentro fleet)
+    const ccVehicle = await Vehicle.findOne({
+      imei: imei,
+      fleet_name: { $regex: /JURAGAN99-(AKAP|PARIWISATA|OPERASIONAL)/ },
+    }).lean();
+
+    if (ccVehicle) {
+      // CarCentro buses use DVR with direct streaming via AoooG platform
+      // We don't proxy their video - redirect to CarCentro portal
+      return res.json({
+        imei,
+        channel: parseInt(channel),
+        available: true,
+        is_present: true,
+        source: "carcentro",
+        portal_url: `http://carcentro.aooog.com`,
+        message: "Video streaming available via CarCentro portal",
+      });
+    }
+
     const streamInfo = await videoStreamService.getStreamInfo(imei, parseInt(channel));
 
     res.json({
@@ -1191,9 +1212,16 @@ app.get("/api/command-center/vehicles", async (req, res) => {
           const score = Math.max(0, 100 - totalCorrectAlarms * 5);
 
           // Determine ACC ON status from on_off field (1 = ON, others = OFF)
+          // Also check state field for CarCentro data (state=3 = ACC ON)
           let accOn = false;
-          if (latestCoord && latestCoord.properties && latestCoord.properties.daily_subtotal) {
-            accOn = latestCoord.properties.daily_subtotal.on_off === 1;
+          if (latestCoord) {
+            if (latestCoord.properties && latestCoord.properties.daily_subtotal) {
+              accOn = latestCoord.properties.daily_subtotal.on_off === 1;
+            }
+            // CarCentro uses state: 3 for ACC ON, 0 for ACC OFF
+            if (!accOn && latestCoord.state === 3) {
+              accOn = true;
+            }
           }
 
           return {
@@ -1663,6 +1691,208 @@ function formatTime(date) {
 }
 
 // ============================================================
+// CARCENTRO (AoooG) API ENDPOINTS
+// ============================================================
+
+// API: Get CarCentro worker status
+app.get("/api/carcentro/status", (req, res) => {
+  try {
+    res.json({
+      enabled: config.carcentro.enabled,
+      baseUrl: config.carcentro.baseUrl,
+      message: config.carcentro.enabled
+        ? "CarCentro worker is running"
+        : "CarCentro is disabled",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Get CarCentro vehicles (from DB, fleet_name contains AKAP/PARIWISATA/OPERASIONAL)
+app.get("/api/carcentro/vehicles", async (req, res) => {
+  try {
+    const { group } = req.query;
+    let query = {
+      fleet_name: { $regex: /JURAGAN99-(AKAP|PARIWISATA|OPERASIONAL)/ },
+      status: "active",
+    };
+
+    if (group) {
+      query.fleet_name = { $regex: new RegExp(`JURAGAN99-${group}`, "i") };
+    }
+
+    const vehicles = await Vehicle.find(query)
+      .select("name display_name lpn imei fleet_name vehicle_type status")
+      .sort({ fleet_name: 1, name: 1 });
+
+    // Group by fleet
+    const grouped = {};
+    vehicles.forEach((v) => {
+      const grp = v.fleet_name.replace("JURAGAN99-", "");
+      if (!grouped[grp]) grouped[grp] = [];
+      grouped[grp].push(v);
+    });
+
+    res.json({
+      total: vehicles.length,
+      groups: grouped,
+      vehicles: vehicles,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Get CarCentro vehicle with latest GPS position
+app.get("/api/carcentro/tracking", async (req, res) => {
+  try {
+    const { group } = req.query;
+
+    // Get CarCentro vehicles
+    let vehicleQuery = {
+      fleet_name: { $regex: /JURAGAN99-(AKAP|PARIWISATA|OPERASIONAL)/ },
+      status: "active",
+    };
+    if (group) {
+      vehicleQuery.fleet_name = {
+        $regex: new RegExp(`JURAGAN99-${group}`, "i"),
+      };
+    }
+
+    const vehicles = await Vehicle.find(vehicleQuery).lean();
+    const imeis = vehicles.map((v) => v.imei);
+
+    // Get latest coordinates for these vehicles
+    const latestCoords = await Coordinate.aggregate([
+      { $match: { imei: { $in: imeis } } },
+      { $sort: { event_time: -1 } },
+      {
+        $group: {
+          _id: "$imei",
+          vehicle_name: { $first: "$vehicle_name" },
+          lat: { $first: "$lat" },
+          lng: { $first: "$lng" },
+          speed: { $first: "$speed" },
+          azimuth: { $first: "$azimuth" },
+          event_time: { $first: "$event_time" },
+          state: { $first: "$state" },
+          mileage: { $first: "$mileage" },
+        },
+      },
+    ]);
+
+    // Merge vehicle info with coordinates
+    const result = vehicles.map((v) => {
+      const coord = latestCoords.find((c) => c._id === v.imei);
+      return {
+        ...v,
+        lat: coord?.lat || null,
+        lng: coord?.lng || null,
+        speed: coord?.speed || 0,
+        heading: coord?.azimuth || 0,
+        last_update: coord?.event_time || null,
+        acc: coord?.state === 3 ? "ON" : "OFF",
+        mileage: coord?.mileage || 0,
+        hasGPS: !!coord,
+      };
+    });
+
+    res.json({
+      total: result.length,
+      tracking: result,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Get CarCentro video channel config for a vehicle
+app.get("/api/carcentro/video-config/:imei", async (req, res) => {
+  try {
+    const { imei } = req.params;
+
+    // Verify this is a CarCentro vehicle
+    const vehicle = await Vehicle.findOne({
+      imei: imei,
+      fleet_name: { $regex: /JURAGAN99-(AKAP|PARIWISATA|OPERASIONAL)/ },
+    }).lean();
+
+    if (!vehicle) {
+      return res.status(404).json({ error: "Not a CarCentro vehicle" });
+    }
+
+    // Return known channel configs based on device type
+    // From API data: DASHCAM models have up to 11 channels
+    // Other models typically have 3 channels
+    const channelConfigs = {
+      DASHCAM_11: [
+        { channel: 1, name: "ADAS" },
+        { channel: 2, name: "DSM" },
+        { channel: 3, name: "SIDE KANAN" },
+        { channel: 4, name: "SIDE KIRI" },
+        { channel: 5, name: "PENUMPANG ATAS (BELAKANG)" },
+        { channel: 6, name: "BAGASI KIRI" },
+        { channel: 7, name: "BAGASI KANAN" },
+        { channel: 8, name: "KAMERA BELAKANG" },
+        { channel: 9, name: "PENUMPANG DEPAN (BAWAH)" },
+        { channel: 10, name: "DEPAN TOILET" },
+        { channel: 11, name: "TANGGA" },
+      ],
+      DASHCAM_3: [
+        { channel: 1, name: "BELAKANG" },
+        { channel: 2, name: "DEPAN" },
+        { channel: 3, name: "ADD-CAM" },
+      ],
+    };
+
+    // AKAP buses with newer DVR have 11 channels, others have 3
+    const isAKAP = vehicle.fleet_name.includes("AKAP");
+    const channels = isAKAP ? channelConfigs.DASHCAM_11 : channelConfigs.DASHCAM_3;
+
+    res.json({
+      vehicle_name: vehicle.name,
+      display_name: vehicle.display_name,
+      imei: imei,
+      source: "carcentro",
+      portal_url: "http://carcentro.aooog.com",
+      channels: channels,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Detect vehicle source (tgtrack, solofleet, or carcentro)
+app.get("/api/vehicle-source/:imei", async (req, res) => {
+  try {
+    const { imei } = req.params;
+    const vehicle = await Vehicle.findOne({ imei }).lean();
+
+    if (!vehicle) {
+      return res.status(404).json({ error: "Vehicle not found" });
+    }
+
+    let source = "tgtrack"; // default
+    if (vehicle.fleet_name && vehicle.fleet_name.match(/JURAGAN99-(AKAP|PARIWISATA|OPERASIONAL)/)) {
+      source = "carcentro";
+    } else if (vehicle.fleet_name && vehicle.fleet_name.includes("SOLOFLEET")) {
+      source = "solofleet";
+    }
+
+    res.json({
+      imei,
+      vehicle_name: vehicle.name,
+      display_name: vehicle.display_name,
+      source,
+      fleet_name: vehicle.fleet_name,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // SOLOFLEET API ENDPOINTS
 // ============================================================
 
@@ -1924,6 +2154,14 @@ async function main() {
           );
         }
       })();
+    }
+
+    // Initialize CarCentro (AoooG) worker (if enabled)
+    let carcentroWorker = null;
+    if (config.carcentro.enabled) {
+      carcentroWorker = new CarCentroWorker(config.carcentro);
+      await carcentroWorker.start(config.carcentro.interval);
+      console.log("✅ CarCentro (AoooG) worker started");
     }
 
     // Fetch and process alarms within time range with pagination
@@ -2248,6 +2486,11 @@ async function main() {
     // Stop SoloFleet video streams
     if (sfVideoService) {
       await sfVideoService.stopAll();
+    }
+
+    // Stop CarCentro worker saat shutdown
+    if (carcentroWorker) {
+      carcentroWorker.stop();
     }
 
     if (browser) {

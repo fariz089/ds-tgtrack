@@ -71,6 +71,21 @@ services:
     networks:
       - app-network
     restart: "no"
+
+  seed-carcentro:
+    build: .
+    container_name: carcentro-vehicle-seed
+    env_file:
+      - .env.production
+    environment:
+      - NODE_ENV=production
+      - TZ=Asia/Jakarta
+    command: node seedCarCentroVehicles.js
+    depends_on:
+      - mongo
+    networks:
+      - app-network
+    restart: "no"
 volumes:
   mongo-db:
 

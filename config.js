@@ -74,4 +74,14 @@ module.exports = {
       process.env.SOLOFLEET_HISTORY === true,
     historyDays: parseInt(process.env.SOLOFLEET_HISTORY_DAYS) || 60,
   },
+
+  carcentro: {
+    baseUrl: process.env.CARCENTRO_URL || "http://carcentro.aooog.com",
+    username: process.env.CARCENTRO_USERNAME,
+    password: process.env.CARCENTRO_PASSWORD,
+    enabled:
+      process.env.CARCENTRO_ENABLED === "true" ||
+      process.env.CARCENTRO_ENABLED === true,
+    interval: parseInt(process.env.CARCENTRO_INTERVAL) || 15000,
+  },
 };
