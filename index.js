@@ -29,6 +29,8 @@ const AlarmStoreWorker = require("./alarmStoreWorker");
 const SoloFleetWorker = require("./solofleetWorker");
 const SoloFleetVideoService = require("./solofleetVideoService");
 const CarCentroWorker = require("./carcentroWorker");
+const CarCentroVideoService = require("./carcentroVideoService");
+const CarCentroService = require("./carcentroService");
 
 // CORS configuration - allow psgrx from different origins
 const allowedOrigins = [
@@ -917,8 +919,21 @@ app.get("/api/video/check/:imei/:channel", checkVideoAuth, async (req, res) => {
     }).lean();
 
     if (ccVehicle) {
-      // CarCentro buses use DVR with direct streaming via AoooG platform
-      // We don't proxy their video - redirect to CarCentro portal
+      // CarCentro: check if video service is available for proxied streaming
+      const ccVideoSvc = global.__ccVideoService;
+      if (ccVideoSvc && ccVideoSvc.isCarCentroDevice(imei)) {
+        const status = ccVideoSvc.getStreamStatus(imei, parseInt(channel));
+        return res.json({
+          imei,
+          channel: parseInt(channel),
+          available: true,
+          is_present: true,
+          source: "carcentro",
+          streaming: status.active,
+          portal_url: `http://carcentro.aooog.com`,
+        });
+      }
+      // Fallback: video service not ready, redirect to portal
       return res.json({
         imei,
         channel: parseInt(channel),
@@ -1157,6 +1172,83 @@ app.post("/api/video/sf-stop/:imei/:channel", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ============================================================
+// CARCENTRO (AoooG) VIDEO STREAM ENDPOINTS
+// ============================================================
+
+// API: CarCentro video stream via WebSocket upgrade
+// Client connects to: ws://host:3000/api/video/cc-stream/{imei}/{channel}
+// Receives raw H.264/H.265 frames for WASM decoder
+app.get("/api/video/cc-stream/:imei/:channel", async (req, res) => {
+  // This endpoint is handled by the WebSocket upgrade below
+  const { imei, channel } = req.params;
+  const svc = global.__ccVideoService;
+
+  if (svc && svc.isCarCentroDevice(imei)) {
+    const status = svc.getStreamStatus(imei, parseInt(channel));
+    return res.json({
+      message: "Use WebSocket to connect to this endpoint",
+      wsUrl: `ws://${req.headers.host}/api/video/cc-stream/${imei}/${channel}`,
+      ...status,
+    });
+  }
+
+  res.status(404).json({ error: "Not a CarCentro device or service not ready" });
+});
+
+// API: CarCentro start stream (can be called before WS connect)
+app.post("/api/video/cc-start/:imei/:channel", async (req, res) => {
+  try {
+    const { imei, channel } = req.params;
+    const svc = global.__ccVideoService;
+
+    if (!svc || !svc.isCarCentroDevice(imei)) {
+      return res.status(404).json({ error: "Not a CarCentro device or service not ready" });
+    }
+
+    const session = await svc.startStream(imei, parseInt(channel));
+    res.json({
+      success: true,
+      wsUrl: `ws://${req.headers.host}/api/video/cc-stream/${imei}/${channel}`,
+      connected: session.wsConnected,
+      framesReceived: session.framesReceived,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: CarCentro stop stream
+app.post("/api/video/cc-stop/:imei/:channel", async (req, res) => {
+  try {
+    const { imei, channel } = req.params;
+    const svc = global.__ccVideoService;
+
+    if (!svc) {
+      return res.status(404).json({ error: "CarCentro video not enabled" });
+    }
+
+    await svc.stopStream(imei, parseInt(channel));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: CarCentro video service status
+app.get("/api/video/cc-status", (req, res) => {
+  const svc = global.__ccVideoService;
+  if (!svc) {
+    return res.json({ enabled: false });
+  }
+  res.json({
+    enabled: true,
+    ready: svc.isReady,
+    devices: svc.deviceMap.size,
+    activeStreams: svc.getAllStatus(),
+  });
 });
 
 // API: Get vehicle summary for Command Center (36 hours)
@@ -1612,7 +1704,9 @@ const server = app.listen(PORT, () => {
 // Routes:
 //   /ws/copilot → Copilot alarm/GPS WebSocket
 //   /api/video/sf-stream/{imei}/{channel} → SoloFleet video WebSocket
+//   /api/video/cc-stream/{imei}/{channel} → CarCentro video WebSocket
 const sfVideoWss = new (require("ws").Server)({ noServer: true });
+const ccVideoWss = new (require("ws").Server)({ noServer: true });
 
 server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
@@ -1631,47 +1725,71 @@ server.on("upgrade", (request, socket, head) => {
   }
 
   // Route 2: SoloFleet Video WebSocket
-  const match = url.pathname.match(
+  const sfMatch = url.pathname.match(
     /^\/api\/video\/sf-stream\/([^/]+)\/(\d+)$/
   );
 
-  if (!match) {
-    socket.destroy();
+  if (sfMatch) {
+    const imei = sfMatch[1];
+    const channel = parseInt(sfMatch[2]);
+
+    sfVideoWss.handleUpgrade(request, socket, head, async (ws) => {
+      const svc = global.__sfVideoService;
+      if (!svc || !svc.isSoloFleetDevice(imei)) {
+        ws.close(1008, "Not a SoloFleet device or service not ready");
+        return;
+      }
+
+      try {
+        console.log(`[SF-Video] 🎥 WS client requesting: ${imei} ch${channel}`);
+        const session = await svc.startStream(imei, channel);
+        session.addClient(ws);
+
+        ws.on("close", () => {
+          console.log(`[SF-Video] 🎥 WS client disconnected: ${imei} ch${channel}`);
+        });
+      } catch (err) {
+        console.error(`[SF-Video] WS error:`, err.message);
+        ws.close(1011, err.message);
+      }
+    });
     return;
   }
 
-  const imei = match[1];
-  const channel = parseInt(match[2]);
+  // Route 3: CarCentro Video WebSocket
+  const ccMatch = url.pathname.match(
+    /^\/api\/video\/cc-stream\/([^/]+)\/(\d+)$/
+  );
 
-  sfVideoWss.handleUpgrade(request, socket, head, async (ws) => {
-    // sfVideoService is set inside main() — check if available via global
-    const svc = global.__sfVideoService;
-    if (!svc || !svc.isSoloFleetDevice(imei)) {
-      ws.close(1008, "Not a SoloFleet device or service not ready");
-      return;
-    }
+  if (ccMatch) {
+    const imei = ccMatch[1];
+    const channel = parseInt(ccMatch[2]);
 
-    try {
-      console.log(
-        `[SF-Video] 🎥 WS client requesting: ${imei} ch${channel}`
-      );
+    ccVideoWss.handleUpgrade(request, socket, head, async (ws) => {
+      const svc = global.__ccVideoService;
+      if (!svc || !svc.isCarCentroDevice(imei)) {
+        ws.close(1008, "Not a CarCentro device or service not ready");
+        return;
+      }
 
-      // Start stream if not already active
-      const session = await svc.startStream(imei, channel);
+      try {
+        console.log(`[CC-Video] 🎥 WS client requesting: ${imei} ch${channel}`);
+        const session = await svc.startStream(imei, channel);
+        session.addClient(ws);
 
-      // Add this client to receive H.264 data
-      session.addClient(ws);
+        ws.on("close", () => {
+          console.log(`[CC-Video] 🎥 WS client disconnected: ${imei} ch${channel}`);
+        });
+      } catch (err) {
+        console.error(`[CC-Video] WS error:`, err.message);
+        ws.close(1011, err.message);
+      }
+    });
+    return;
+  }
 
-      ws.on("close", () => {
-        console.log(
-          `[SF-Video] 🎥 WS client disconnected: ${imei} ch${channel}`
-        );
-      });
-    } catch (err) {
-      console.error(`[SF-Video] WS error:`, err.message);
-      ws.close(1011, err.message);
-    }
-  });
+  // No matching route
+  socket.destroy();
 });
 
 // Wait until next 15-second interval (00, 15, 30, 45)
@@ -2163,6 +2281,28 @@ async function main() {
       carcentroWorker = new CarCentroWorker(config.carcentro);
       await carcentroWorker.start(config.carcentro.interval);
       console.log("✅ CarCentro (AoooG) worker started");
+
+      // Initialize CarCentro Video Service
+      const ccVideoService = new CarCentroVideoService(config.carcentro);
+      await ccVideoService.init();
+      global.__ccVideoService = ccVideoService; // For WebSocket upgrade handler
+
+      // Register devices from CarCentro track data
+      (async () => {
+        try {
+          await ccVideoService.service.ensureLoggedIn();
+          const devices = await ccVideoService.service.fetchTrackData();
+          if (devices && devices.length > 0) {
+            for (const device of devices) {
+              const parsed = CarCentroService.parseDeviceRecord(device);
+              ccVideoService.registerDevice(parsed.deviceName, parsed.deviceID, parsed.alias);
+            }
+            console.log(`✅ CarCentro video service: ${ccVideoService.deviceMap.size} devices registered`);
+          }
+        } catch (err) {
+          console.error("⚠ CarCentro video device registration error:", err.message);
+        }
+      })();
     }
 
     // Fetch and process alarms within time range with pagination

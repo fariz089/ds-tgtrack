@@ -636,21 +636,9 @@ function openCamera(imei, channel, vehicleName) {
       console.log("[Camera] Check response:", data);
 
       if (data.source === "carcentro") {
-        // CarCentro: redirect to portal
-        player.style.display = "none";
-        info.innerHTML = `
-          <div style="text-align:center;padding:30px;">
-            <i class="fas fa-external-link-alt" style="font-size:36px;color:#0066a1;margin-bottom:15px;display:block;"></i>
-            <div style="font-size:16px;font-weight:600;margin-bottom:10px;">${vehicleName} - CCTV</div>
-            <div style="font-size:13px;color:#666;margin-bottom:20px;">
-              Video streaming tersedia melalui CarCentro (AoooG) portal
-            </div>
-            <a href="${data.portal_url}" target="_blank" 
-               style="display:inline-block;padding:12px 24px;background:#0066a1;color:white;border-radius:8px;text-decoration:none;font-weight:600;">
-              <i class="fas fa-external-link-alt"></i> Buka CarCentro Portal
-            </a>
-          </div>
-        `;
+        // CarCentro: stream via WebSocket proxy + JMuxer (same as SoloFleet)
+        player.style.display = "";
+        streamCarCentro(imei, channel, vehicleName);
         return;
       }
 
@@ -713,25 +701,174 @@ function openCarCentroCCTV(imei, channel, vehicleName, channelName) {
 
   cleanupAllPlayers();
   player.src = "";
-  player.style.display = "none";
+  player.style.display = "";
 
-  info.innerHTML = `
-    <div style="text-align:center;padding:30px;">
-      <i class="fas fa-video" style="font-size:36px;color:#0066a1;margin-bottom:15px;display:block;"></i>
-      <div style="font-size:16px;font-weight:600;margin-bottom:5px;">${vehicleName}</div>
-      <div style="font-size:14px;color:#0066a1;margin-bottom:15px;">${channelName} (Channel ${channel})</div>
-      <div style="font-size:13px;color:#666;margin-bottom:20px;">
-        CCTV streaming untuk bus CarCentro tersedia melalui portal AoooG.<br>
-        Klik tombol di bawah untuk membuka portal.
-      </div>
-      <a href="http://carcentro.aooog.com" target="_blank" 
-         style="display:inline-block;padding:12px 24px;background:linear-gradient(135deg,#0066a1 0%,#003d5c 100%);color:white;border-radius:8px;text-decoration:none;font-weight:600;box-shadow:0 2px 8px rgba(0,102,161,0.3);">
-        <i class="fas fa-external-link-alt"></i> Buka CarCentro CCTV
-      </a>
-    </div>
-  `;
-
+  info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - ${channelName} (Menghubungkan...)`;
   modal.classList.add("active");
+
+  // Use the CarCentro WebSocket proxy
+  streamCarCentro(imei, channel, vehicleName);
+}
+
+// ── CarCentro stream (WebSocket proxy + JMuxer) ─────────────
+let ccJmuxer = null;
+let ccWebSocket = null;
+
+function streamCarCentro(imei, channel, vehicleName) {
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  cleanupCarCentroStream();
+  info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - Camera ${channel} (Connecting CarCentro...)`;
+
+  if (typeof JMuxer === "undefined") {
+    info.textContent = `${vehicleName} - Camera ${channel} (JMuxer not loaded)`;
+    return;
+  }
+
+  initCarCentroStream(imei, channel, vehicleName);
+}
+
+function initCarCentroStream(imei, channel, vehicleName) {
+  const player = document.getElementById("videoPlayer");
+  const info = document.getElementById("videoInfo");
+
+  try {
+    ccJmuxer = new JMuxer({
+      node: "videoPlayer",
+      mode: "video",
+      flushingTime: 1000,
+      clearBuffer: true,
+      fps: 15,
+      debug: false,
+      onError: function (data) {
+        console.error("[CarCentro] JMuxer error:", data);
+      },
+    });
+
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/api/video/cc-stream/${imei}/${channel}`;
+    console.log("[CarCentro] WS URL:", wsUrl);
+
+    ccWebSocket = new WebSocket(wsUrl);
+    ccWebSocket.binaryType = "arraybuffer";
+
+    let framesReceived = 0;
+    let streamReady = false;
+
+    // Timeout if no frames after 20s
+    let ccTimeout = setTimeout(() => {
+      if (framesReceived === 0) {
+        player.style.display = "none";
+        info.innerHTML = `
+          <div style="text-align:center;padding:40px;">
+            <i class="fas fa-video-slash" style="font-size:48px;color:#666;margin-bottom:15px;display:block;"></i>
+            <div style="font-size:16px;font-weight:600;margin-bottom:8px;">${vehicleName} - Camera ${channel}</div>
+            <div style="font-size:13px;color:#999;margin-bottom:15px;">
+              DVR tidak merespons — kemungkinan offline atau channel tidak tersedia.
+            </div>
+            <div style="display:flex;gap:10px;justify-content:center;">
+              <button onclick="cleanupCarCentroStream(); closeVideo(); setTimeout(() => openCamera('${imei}', ${channel}, '${vehicleName}'), 300);"
+                 style="padding:10px 20px;background:#0066a1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">
+                <i class="fas fa-redo"></i> Coba Lagi
+              </button>
+              <a href="http://carcentro.aooog.com" target="_blank" 
+                 style="padding:10px 20px;background:#666;color:white;border:none;border-radius:6px;text-decoration:none;font-size:13px;display:inline-flex;align-items:center;gap:5px;">
+                <i class="fas fa-external-link-alt"></i> Buka Portal
+              </a>
+            </div>
+          </div>
+        `;
+      }
+    }, 20000);
+
+    ccWebSocket.onopen = () => {
+      console.log("[CarCentro] WS connected");
+      info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - Camera ${channel} (Waiting for DVR stream...)`;
+    };
+
+    ccWebSocket.onmessage = (event) => {
+      // Check for JSON control messages
+      if (typeof event.data === "string" || (event.data instanceof ArrayBuffer && event.data.byteLength < 500)) {
+        try {
+          const text = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
+          if (text.startsWith("{")) {
+            const msg = JSON.parse(text);
+            console.log("[CarCentro] Control:", msg);
+            if (msg.type === "stream_ready") {
+              streamReady = true;
+              info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - Camera ${channel} (Stream ready, buffering...)`;
+            }
+            return;
+          }
+        } catch (e) {
+          // Not JSON, treat as binary
+        }
+      }
+
+      // Binary video frame
+      framesReceived++;
+      const data = new Uint8Array(event.data);
+
+      ccJmuxer.feed({ video: data });
+
+      if (framesReceived === 1) {
+        clearTimeout(ccTimeout);
+        info.textContent = `${vehicleName} - Camera ${channel} (Live - CarCentro)`;
+        player.style.display = "";
+        player.play().catch(() => {});
+      }
+
+      if (framesReceived % 100 === 0) {
+        console.log(`[CarCentro] ${framesReceived} frames received`);
+      }
+    };
+
+    ccWebSocket.onerror = (err) => {
+      clearTimeout(ccTimeout);
+      console.error("[CarCentro] WS error:", err);
+      info.textContent = `${vehicleName} - Camera ${channel} (Connection Error)`;
+    };
+
+    ccWebSocket.onclose = (event) => {
+      clearTimeout(ccTimeout);
+      console.log("[CarCentro] WS closed:", event.code, event.reason);
+      if (framesReceived === 0) {
+        player.style.display = "none";
+        info.innerHTML = `
+          <div style="text-align:center;padding:40px;">
+            <i class="fas fa-video-slash" style="font-size:48px;color:#666;margin-bottom:15px;display:block;"></i>
+            <div style="font-size:16px;font-weight:600;margin-bottom:8px;">${vehicleName} - Camera ${channel}</div>
+            <div style="font-size:13px;color:#999;margin-bottom:15px;">Stream tidak tersedia</div>
+            <div style="display:flex;gap:10px;justify-content:center;">
+              <button onclick="cleanupCarCentroStream(); closeVideo(); setTimeout(() => openCamera('${imei}', ${channel}, '${vehicleName}'), 300);"
+                 style="padding:10px 20px;background:#0066a1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">
+                <i class="fas fa-redo"></i> Coba Lagi
+              </button>
+              <a href="http://carcentro.aooog.com" target="_blank" 
+                 style="padding:10px 20px;background:#666;color:white;border:none;border-radius:6px;text-decoration:none;font-size:13px;display:inline-flex;align-items:center;gap:5px;">
+                <i class="fas fa-external-link-alt"></i> Buka Portal
+              </a>
+            </div>
+          </div>
+        `;
+      }
+    };
+  } catch (err) {
+    console.error("[CarCentro] Init error:", err);
+    info.textContent = `${vehicleName} - Camera ${channel} (Init Error)`;
+  }
+}
+
+function cleanupCarCentroStream() {
+  if (ccWebSocket) {
+    try { ccWebSocket.close(); } catch (e) {}
+    ccWebSocket = null;
+  }
+  if (ccJmuxer) {
+    try { ccJmuxer.destroy(); } catch (e) {}
+    ccJmuxer = null;
+  }
 }
 
 // ── TGTrack stream strategy ───────────────────────────────
@@ -1175,6 +1312,7 @@ function cleanupAllPlayers() {
   cleanupHLS();
   cleanupMpegTS();
   cleanupSoloFleetStream();
+  cleanupCarCentroStream();
 
   // Also reset the video element
   const player = document.getElementById("videoPlayer");

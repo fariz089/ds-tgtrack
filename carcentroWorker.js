@@ -104,6 +104,13 @@ class CarCentroWorker {
       // Auto-register new vehicles
       await this.autoRegisterVehicles(parsedDevices);
 
+      // Register devices with CarCentro video service (if available)
+      if (global.__ccVideoService) {
+        for (const device of parsedDevices) {
+          global.__ccVideoService.registerDevice(device.deviceName, device.deviceID, device.alias);
+        }
+      }
+
       // Log summary periodically
       if (this.fetchCount % 20 === 1) {
         const moving = parsedDevices.filter(
