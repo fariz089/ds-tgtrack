@@ -211,61 +211,106 @@ class CaptureSession {
     const domain = new URL(this.baseUrl).hostname;
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-    // Step 1: Set login cookies before any navigation
+    // Step 1: Call Login API from Node.js via axios (reliable, sets server session)
+    console.log(`[CC-CCTV] Logging in via API for ${this.deviceName}...`);
+    let sessionKey = "";
+    try {
+      const axios = require("axios");
+      const localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
+      const loginParams = new URLSearchParams({
+        authentication: this.authToken, localTime,
+        "domain[]": domain, _: Date.now().toString(),
+      });
+
+      // Login call
+      const loginResp = await axios.get(
+        `${this.baseUrl}/AoooG_WebService.svc/Login?${loginParams}`,
+        { headers: { Accept: "*/*" }, timeout: 15000, withCredentials: true }
+      );
+
+      // Extract set-cookie from login response
+      const loginCookies = loginResp.headers["set-cookie"] || [];
+      console.log(`[CC-CCTV] Login API OK, got ${loginCookies.length} cookies`);
+
+      // Parse cookies from response and set on Puppeteer page
+      for (const cookieStr of loginCookies) {
+        const parts = cookieStr.split(";")[0].split("=");
+        if (parts.length >= 2) {
+          await this.page.setCookie({ name: parts[0].trim(), value: parts.slice(1).join("=").trim(), domain, path: "/" });
+        }
+      }
+
+      // Get session key
+      const settingResp = await axios.post(
+        `${this.baseUrl}/AoooG_WebService.svc/AjaxSettingParameter`,
+        { authentication: this.authToken, proName: "GetAccountOptions", isCompress: 0, json: "" },
+        { headers: { "Content-Type": "application/json", Accept: "application/json" }, timeout: 15000 }
+      );
+      sessionKey = settingResp.data?.d?.Key || "";
+      if (sessionKey) console.log(`[CC-CCTV] Session key obtained`);
+    } catch (err) {
+      console.error(`[CC-CCTV] Login API error: ${err.message}`);
+    }
+
+    // Step 2: Set all required cookies on Puppeteer page
     await this.page.setCookie(
       { name: "aooog_login", value: this.authToken, domain, path: "/" },
       { name: "aooog_cookie_lng", value: "en", domain, path: "/" },
       { name: "account_name", value: this.username, domain, path: "/" },
+      { name: "CompanyName", value: "JURAGAN 99 TRANS", domain, path: "/" },
+      { name: "AccountName", value: "JURAGAN 99 TRANS", domain, path: "/" },
+      ...(sessionKey ? [{ name: "AoooG_GPS_System_Key", value: sessionKey, domain, path: "/" }] : []),
     );
 
-    // Step 2: Call Login API from page context first (sets server session)
-    console.log(`[CC-CCTV] Logging in for ${this.deviceName}...`);
-    await this.page.goto(this.baseUrl + "/login/", { waitUntil: "domcontentloaded", timeout: 30000 });
-    await sleep(2000);
-
-    // Do the login API call from browser context
-    await this.page.evaluate(async (authToken, baseUrl) => {
-      const localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
-      const params = new URLSearchParams({
-        authentication: authToken,
-        localTime: localTime,
-        "domain[]": new URL(baseUrl).hostname,
-        _: Date.now().toString(),
-      });
-      try {
-        await fetch(baseUrl + "/AoooG_WebService.svc/Login?" + params.toString(), { credentials: "include" });
-      } catch (e) { console.log("Login fetch error:", e); }
-    }, this.authToken, this.baseUrl);
-
-    await sleep(1000);
-
-    // Step 3: Navigate to main portal
+    // Step 3: Navigate directly to main portal (skip /login/ entirely)
     console.log(`[CC-CCTV] Navigating to portal for ${this.deviceName}...`);
     await this.page.goto(this.baseUrl + "/#", { waitUntil: "domcontentloaded", timeout: 60000 });
-    // Wait for portal JS to load and initialize
-    await sleep(8000);
+    await sleep(10000);
 
     console.log(`[CC-CCTV] Portal loaded. URL: ${this.page.url()}`);
+
+    // If still redirected to login, retry with page-context fetch
+    if (this.page.url().includes("/login")) {
+      console.log(`[CC-CCTV] Still on login page, retrying from browser context...`);
+      await this.page.evaluate(async (authToken, baseUrl, domainName) => {
+        document.cookie = "aooog_login=" + authToken + "; path=/";
+        const p = new URLSearchParams({
+          authentication: authToken,
+          localTime: new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }),
+          "domain[]": domainName, _: Date.now().toString()
+        });
+        try { await fetch(baseUrl + "/AoooG_WebService.svc/Login?" + p, { credentials: "include" }); } catch(e) {}
+      }, this.authToken, this.baseUrl, domain);
+      await sleep(2000);
+      await this.page.goto(this.baseUrl + "/#", { waitUntil: "domcontentloaded", timeout: 30000 });
+      await sleep(8000);
+      console.log(`[CC-CCTV] After retry, URL: ${this.page.url()}`);
+    }
 
     // Step 4: Click Video tab
     try {
       const clickedVideo = await this.page.evaluate(() => {
-        // Look for the Video tab specifically
-        const links = document.querySelectorAll("a[href], span, div");
-        for (const el of links) {
-          const text = el.textContent.trim();
-          if (text === "Video" && el.offsetParent !== null) {
-            el.click();
-            return "clicked-text";
+        // Look for the Video tab specifically in tabs
+        var tabs = document.querySelectorAll(".tabs-title, .tabs a, a[href], span.l-btn-text");
+        for (var i = 0; i < tabs.length; i++) {
+          var text = tabs[i].textContent.trim();
+          if (text === "Video" && tabs[i].offsetParent !== null) {
+            tabs[i].click();
+            return "clicked:" + tabs[i].tagName;
           }
         }
-        // Try by class/id patterns
-        const videoTab = document.querySelector('[data-options*="Video"], .tabs-title:contains("Video")');
-        if (videoTab) { videoTab.click(); return "clicked-selector"; }
+        // Broader search
+        var all = document.querySelectorAll("a, span, div, li");
+        for (var j = 0; j < all.length; j++) {
+          if (all[j].textContent.trim() === "Video" && all[j].offsetParent !== null && all[j].offsetWidth > 10) {
+            all[j].click();
+            return "clicked-broad:" + all[j].tagName;
+          }
+        }
         return "not-found";
       });
       console.log(`[CC-CCTV] Video tab click: ${clickedVideo}`);
-      await sleep(3000);
+      await sleep(5000);
     } catch (err) {
       console.warn(`[CC-CCTV] Could not click Video tab: ${err.message}`);
     }
