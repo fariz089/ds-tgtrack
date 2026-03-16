@@ -2008,12 +2008,32 @@ async function main() {
   try {
     console.log("🚀 Starting DS-TGTrack Monitor Service...\n");
     
-    // Clean up stale Chrome lock file (prevents crash on restart)
+    // Kill any stale Chrome processes and clean all lock files
     const fs = require("fs");
-    const lockFile = path.join(__dirname, "chrome-session", "SingletonLock");
-    if (fs.existsSync(lockFile)) {
-      console.log("🧹 Removing stale Chrome lock file...");
-      try { fs.unlinkSync(lockFile); } catch (e) { /* ignore */ }
+    const { execSync } = require("child_process");
+    const sessionDir = path.join(__dirname, "chrome-session");
+    
+    // 1. Kill any lingering Chrome/Chromium processes
+    try {
+      execSync("pkill -f 'chrome-session' 2>/dev/null || true", { stdio: "ignore" });
+      execSync("pkill -f chromium 2>/dev/null || true", { stdio: "ignore" });
+      execSync("pkill -f chrome 2>/dev/null || true", { stdio: "ignore" });
+      console.log("🧹 Killed stale Chrome processes");
+    } catch (e) { /* no processes to kill, fine */ }
+    
+    // 2. Wait a moment for processes to die
+    await sleep(1000);
+    
+    // 3. Remove all lock/socket files in chrome-session
+    const lockFiles = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
+    for (const lf of lockFiles) {
+      const fp = path.join(sessionDir, lf);
+      try {
+        if (fs.existsSync(fp)) {
+          fs.unlinkSync(fp);
+          console.log(`🧹 Removed ${lf}`);
+        }
+      } catch (e) { /* ignore */ }
     }
     
     console.log("launching browser dengan persistent session...");
