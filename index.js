@@ -2008,47 +2008,23 @@ async function main() {
   try {
     console.log("🚀 Starting DS-TGTrack Monitor Service...\n");
     
-    // Kill any stale Chrome processes and clean all lock files
+    // Clean up stale Chrome lock files (for auto-restart retries within same process)
     const fs = require("fs");
     const { execSync } = require("child_process");
     const sessionDir = path.join(__dirname, "chrome-session");
     
-    // 1. Kill ALL chrome-related processes (Playwright Chromium binary path)
     try {
-      // Kill by various patterns that match the Playwright chromium binary
-      const killCmds = [
-        "pkill -9 -f 'chrome-linux/chrome' 2>/dev/null",
-        "pkill -9 -f 'chromium' 2>/dev/null", 
-        "pkill -9 -f 'chrome-session' 2>/dev/null",
-        "pkill -9 -f '/ms-playwright/' 2>/dev/null",
-        // Also try killall
-        "killall -9 chrome 2>/dev/null",
-      ];
-      for (const cmd of killCmds) {
-        try { execSync(cmd, { stdio: "ignore", timeout: 5000 }); } catch (e) { /* fine */ }
-      }
-      console.log("🧹 Killed stale Chrome processes");
-    } catch (e) { /* no processes to kill */ }
+      // Kill any Chrome processes from previous failed attempt
+      execSync("pkill -9 -f 'chrome-linux/chrome' 2>/dev/null", { stdio: "ignore", timeout: 5000 });
+      await sleep(2000);
+    } catch (e) { /* fine */ }
     
-    // 2. Wait for processes to fully terminate
-    await sleep(2000);
-    
-    // 3. Remove ALL lock/socket/pid files in chrome-session
-    if (fs.existsSync(sessionDir)) {
-      const filesToClean = ["SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort"];
-      for (const fname of filesToClean) {
-        const fp = path.join(sessionDir, fname);
-        try {
-          if (fs.existsSync(fp)) {
-            fs.unlinkSync(fp);
-            console.log(`🧹 Removed ${fname}`);
-          }
-        } catch (e) { /* ignore */ }
-      }
-      // Also clean Default/SingletonLock if exists
-      const defaultLock = path.join(sessionDir, "Default", "SingletonLock");
-      try { if (fs.existsSync(defaultLock)) fs.unlinkSync(defaultLock); } catch (e) { /* ignore */ }
+    // Remove lock files
+    const lockFiles = ["SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort"];
+    for (const fname of lockFiles) {
+      try { fs.unlinkSync(path.join(sessionDir, fname)); } catch (e) { /* ignore */ }
     }
+    try { fs.unlinkSync(path.join(sessionDir, "Default", "SingletonLock")); } catch (e) { /* ignore */ }
     
     console.log("launching browser dengan persistent session...");
     browser = await puppeteer.launch(config.browser);
