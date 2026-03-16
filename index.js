@@ -1348,7 +1348,81 @@ const CC_AUTH_TOKEN = config.carcentro.username && config.carcentro.password
   ? Buffer.from(JSON.stringify({ name: config.carcentro.username, pwd: config.carcentro.password })).toString("base64")
   : "";
 
-// Proxy: Login — handle both API call and page navigation
+// Proxy: Login data — does login server-side, returns cookies for frontend to set
+app.get("/cc-proxy/login-data", async (req, res) => {
+  try {
+    const localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
+    const loginParams = new URLSearchParams({
+      authentication: CC_AUTH_TOKEN,
+      localTime,
+      "domain[]": new URL(CC_BASE_URL).hostname,
+      _: Date.now().toString(),
+    });
+
+    // Step 1: Call Login API
+    await axios.get(`${CC_BASE_URL}/AoooG_WebService.svc/Login?${loginParams}`, {
+      headers: { Accept: "*/*", "User-Agent": "Mozilla/5.0" },
+      timeout: 15000,
+    });
+
+    // Step 2: Call GetAccountOptions to get session key
+    const settingResp = await axios.post(
+      `${CC_BASE_URL}/AoooG_WebService.svc/AjaxSettingParameter`,
+      {
+        authentication: CC_AUTH_TOKEN,
+        proName: "GetAccountOptions",
+        isCompress: 0,
+        json: "",
+      },
+      {
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        timeout: 15000,
+      }
+    );
+
+    // Extract session key from response
+    let sessionKey = "";
+    let companyName = "";
+    let accountName = "";
+    const d = settingResp.data?.d;
+    if (d) {
+      sessionKey = d.Key || "";
+      try {
+        const opts = JSON.parse(d.JsonFileName || "[]");
+        if (opts[0]) {
+          companyName = opts[0].CompanyName || "";
+        }
+      } catch (e) {}
+    }
+
+    // Step 3: Return cookies that the portal needs
+    res.json({
+      ok: true,
+      cookies: [
+        { name: "aooog_login", value: CC_AUTH_TOKEN },
+        { name: "AoooG_GPS_System_Key", value: sessionKey },
+        { name: "account_name", value: config.carcentro.username || "J99" },
+        { name: "CompanyName", value: "JURAGAN 99 TRANS" },
+        { name: "AccountName", value: "JURAGAN 99 TRANS" },
+        { name: "aooog_cookie_lng", value: "en" },
+      ],
+    });
+  } catch (err) {
+    console.error("[CC-LoginData] Error:", err.message);
+    // Return minimal cookies even on error
+    res.json({
+      ok: false,
+      error: err.message,
+      cookies: [
+        { name: "aooog_login", value: CC_AUTH_TOKEN },
+        { name: "account_name", value: config.carcentro.username || "J99" },
+        { name: "aooog_cookie_lng", value: "en" },
+      ],
+    });
+  }
+});
+
+// Proxy: Login page handler
 app.get("/cc-proxy/login", async (req, res) => {
   const wantsJson = (req.headers.accept || "").includes("json");
 
@@ -1526,48 +1600,24 @@ app.get("/cc-proxy/portal", async (req, res) => {
     html = html.replace(/wss?:\/\/live\.aooog\.com:9661\/?/g, wsProxyUrl);
     html = html.replace(/["']wss?:\/\/live\.aooog\.com:9661\/?["']/g, `"${wsProxyUrl}"`);
 
-    // Inject auto-login script BEFORE all other scripts
-    // This runs in the browser context so cookies are set correctly
+    // Inject cookie-setting script BEFORE all other scripts
+    // The portal checks for cookie 'aooog_login' to decide if user is logged in
+    // Also override domain detection since we're on a proxy domain
     const autoLoginScript = `
 <script>
-// Auto-login to CarCentro before portal JS initializes
+// Set login cookies so portal skips login redirect
 (function(){
   var AUTH = "${CC_AUTH_TOKEN}";
-  var done = sessionStorage.getItem("cc_logged_in");
-  if (done) return; // Already logged in this session
+  // Set the cookies the portal checks for authentication
+  document.cookie = "aooog_login=" + AUTH + "; path=/";
+  document.cookie = "aooog_cookie_lng=en; path=/";
+  document.cookie = "account_name=${config.carcentro.username || 'J99'}; path=/";
+  document.cookie = "CompanyName=JURAGAN%2099%20TRANS; path=/";
+  document.cookie = "AccountName=JURAGAN%2099%20TRANS; path=/";
 
-  // Block page load until login completes
-  var blocker = document.createElement("div");
-  blocker.id = "cc-auto-login-blocker";
-  blocker.style.cssText = "position:fixed;inset:0;background:#1a1a2e;z-index:999999;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:sans-serif;";
-  blocker.innerHTML = '<div style="width:36px;height:36px;border:3px solid rgba(255,255,255,.1);border-top-color:#0066a1;border-radius:50%;animation:ccspin .7s linear infinite;margin-bottom:14px;"></div><div style="font-size:13px;color:#888;">Login ke CarCentro...</div><style>@keyframes ccspin{to{transform:rotate(360deg)}}</style>';
-  document.documentElement.appendChild(blocker);
-
-  var localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
-  var params = "authentication=" + encodeURIComponent(AUTH)
-    + "&localTime=" + encodeURIComponent(localTime)
-    + "&domain%5B%5D=carcentro.aooog.com"
-    + "&_=" + Date.now();
-
-  var xhr = new XMLHttpRequest();
-  xhr.open("GET", "/cc-proxy/AoooG_WebService.svc/Login?" + params, false); // SYNCHRONOUS
-  xhr.setRequestHeader("Accept", "*/*");
-  try {
-    xhr.send();
-    console.log("[CC-AutoLogin] Status:", xhr.status);
-    if (xhr.status === 200) {
-      sessionStorage.setItem("cc_logged_in", "1");
-      console.log("[CC-AutoLogin] Login OK");
-    }
-  } catch(e) {
-    console.error("[CC-AutoLogin] Error:", e);
-  }
-
-  // Remove blocker after a short delay
-  setTimeout(function(){
-    var b = document.getElementById("cc-auto-login-blocker");
-    if (b) b.remove();
-  }, 500);
+  // Override href_ check — portal uses window.location.href to decide CSS theme
+  // Since we're on a proxy domain, trick it into thinking we're on carcentro.aooog.com
+  window.__cc_proxy_override = true;
 })();
 </script>`;
 
@@ -1575,6 +1625,10 @@ app.get("/cc-proxy/portal", async (req, res) => {
     html = html.replace(/<head>/i, `<head>
 <base href="/cc-proxy/">
 ${autoLoginScript}`);
+
+    // Fix domain detection: portal checks href for 'carcentro.aooog.com'
+    // Replace the domain check so it always matches
+    html = html.replace(/href_\.indexOf\(['"]carcentro\.aooog\.com['"]\)/g, "true||href_.indexOf('carcentro.aooog.com')");
 
     // Remove CSP meta tags
     html = html.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
@@ -1658,8 +1712,16 @@ app.all("/cc-proxy/*", async (req, res) => {
       js = js.replace(/location\s*=\s*['"]\/login['"]/g, "location='/cc-proxy/portal'");
       js = js.replace(/location\.href\s*=\s*['"]\/login['"]/g, "location.href='/cc-proxy/portal'");
       js = js.replace(/window\.location\s*=\s*['"]\/login['"]/g, "window.location='/cc-proxy/portal'");
+      // Fix domain detection for CSS loading
+      js = js.replace(/href_\.indexOf\(['"]carcentro\.aooog\.com['"]\)/g, "true||href_.indexOf('carcentro.aooog.com')");
+      // Fix API paths
       js = js.replace(/"\/AoooG_WebService/g, '"/cc-proxy/AoooG_WebService');
       js = js.replace(/'\/AoooG_WebService/g, "'/cc-proxy/AoooG_WebService");
+      // Fix relative asset paths in JS
+      js = js.replace(/"assets\//g, '"/cc-proxy/assets/');
+      js = js.replace(/'assets\//g, "'/cc-proxy/assets/");
+      js = js.replace(/"\.\.\/assets\//g, '"/cc-proxy/assets/');
+      js = js.replace(/'\.\.\/assets\//g, "'/cc-proxy/assets/");
       res.send(js);
     } else if (ct.includes("css") || req.path.endsWith(".css")) {
       let css = Buffer.from(resp.data).toString("utf8");

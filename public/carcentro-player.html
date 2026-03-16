@@ -6,62 +6,78 @@
   <title>CCTV — CarCentro</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box;}
-    body{background:#111;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden;width:100vw;height:100vh;}
-    #loading{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#111;z-index:100;}
+    body{background:#1a1a2e;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden;width:100vw;height:100vh;}
+    #loading{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#1a1a2e;z-index:100;}
     .spinner{width:36px;height:36px;border:3px solid rgba(255,255,255,.1);border-top-color:#0066a1;border-radius:50%;animation:spin .7s linear infinite;}
     @keyframes spin{to{transform:rotate(360deg)}}
     #loading .status{margin-top:14px;font-size:13px;color:#888;}
-    #header{position:fixed;top:0;left:0;right:0;height:36px;background:rgba(0,0,0,.85);display:flex;align-items:center;padding:0 12px;z-index:50;gap:8px;backdrop-filter:blur(6px);}
-    #header .title{font-size:12px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    #header .badge{font-size:9px;padding:2px 6px;border-radius:3px;font-weight:600;text-transform:uppercase;}
-    #header .badge.live{background:#22c55e;color:#fff;}
-    #header .badge.loading{background:#f59e0b;color:#000;}
-    #portal-frame{position:fixed;top:36px;left:0;right:0;bottom:0;width:100%;height:calc(100vh - 36px);border:none;background:#000;}
+    #loading .sub{margin-top:6px;font-size:11px;color:#555;}
+    #portal-frame{position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;border:none;background:#000;display:none;}
   </style>
 </head>
 <body>
   <div id="loading">
     <div class="spinner"></div>
-    <div class="status" id="loadStatus">Memuat CarCentro portal...</div>
+    <div class="status" id="loadStatus">Menghubungkan ke CarCentro...</div>
+    <div class="sub" id="loadSub"></div>
   </div>
-  <div id="header" style="display:none;">
-    <div class="title" id="headerTitle">CarCentro CCTV</div>
-    <div class="badge loading" id="headerBadge">LOADING</div>
-  </div>
-  <iframe id="portal-frame" style="display:none;"></iframe>
+  <iframe id="portal-frame"></iframe>
   <script>
     var params = new URLSearchParams(window.location.search);
     var VEHICLE_NAME = decodeURIComponent(params.get('name') || 'CCTV');
-    var CHANNEL = params.get('channel') || '1';
     var $loading = document.getElementById('loading');
-    var $loadStatus = document.getElementById('loadStatus');
-    var $header = document.getElementById('header');
-    var $headerTitle = document.getElementById('headerTitle');
-    var $headerBadge = document.getElementById('headerBadge');
+    var $status = document.getElementById('loadStatus');
+    var $sub = document.getElementById('loadSub');
     var $frame = document.getElementById('portal-frame');
 
-    $headerTitle.textContent = VEHICLE_NAME + ' — CH' + CHANNEL;
+    // Step 1: Get auth data from server
+    $status.textContent = 'Login ke CarCentro...';
 
-    fetch('/cc-proxy/login').then(function(r){ return r.json(); }).then(function(d){
-      console.log('[CC] Login:', d.ok ? 'OK' : 'FAIL');
-      $loadStatus.textContent = 'Memuat portal...';
-      $frame.src = '/cc-proxy/portal';
-      $frame.onload = function(){
-        $loading.style.display = 'none';
-        $header.style.display = 'flex';
-        $frame.style.display = 'block';
-        $headerBadge.textContent = 'LIVE';
-        $headerBadge.className = 'badge live';
-      };
-    }).catch(function(e){
-      $loadStatus.textContent = 'Login gagal, memuat portal...';
-      $frame.src = '/cc-proxy/portal';
-      $frame.onload = function(){
-        $loading.style.display = 'none';
-        $header.style.display = 'flex';
-        $frame.style.display = 'block';
-      };
-    });
+    fetch('/cc-proxy/login-data')
+      .then(function(r){ return r.json(); })
+      .then(function(data) {
+        if (!data.ok) throw new Error(data.error || 'Login failed');
+
+        $status.textContent = 'Setting session...';
+        $sub.textContent = 'Preparing cookies';
+
+        // Step 2: Set cookies on the proxy domain (same origin = works!)
+        // These are the cookies the CarCentro portal checks
+        var cookies = data.cookies;
+        for (var i = 0; i < cookies.length; i++) {
+          document.cookie = cookies[i].name + '=' + encodeURIComponent(cookies[i].value) + '; path=/cc-proxy; SameSite=Lax';
+        }
+
+        $status.textContent = 'Memuat portal...';
+        $sub.textContent = VEHICLE_NAME;
+
+        // Step 3: Load portal iframe
+        $frame.src = '/cc-proxy/portal';
+
+        $frame.onload = function() {
+          $loading.style.display = 'none';
+          $frame.style.display = 'block';
+        };
+
+        // Timeout fallback
+        setTimeout(function() {
+          if ($loading.style.display !== 'none') {
+            $loading.style.display = 'none';
+            $frame.style.display = 'block';
+          }
+        }, 15000);
+      })
+      .catch(function(err) {
+        $status.textContent = 'Login gagal: ' + err.message;
+        $sub.textContent = 'Membuka portal tanpa auto-login...';
+        setTimeout(function() {
+          $frame.src = '/cc-proxy/portal';
+          $frame.onload = function() {
+            $loading.style.display = 'none';
+            $frame.style.display = 'block';
+          };
+        }, 1000);
+      });
   </script>
 </body>
 </html>
