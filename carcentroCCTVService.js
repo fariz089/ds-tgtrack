@@ -37,7 +37,8 @@ class CarCentroCCTVService extends EventEmitter {
   }
 
   /**
-   * Initialize — login to CarCentro in Puppeteer
+   * Initialize — just validate config, don't pre-load portal (too slow/unreliable)
+   * Each CaptureSession will do its own login + navigation on-demand
    */
   async init() {
     if (!this.browser) {
@@ -45,60 +46,15 @@ class CarCentroCCTVService extends EventEmitter {
       return false;
     }
 
-    try {
-      console.log("[CC-CCTV] Initializing...");
-
-      this.portalPage = await this.browser.newPage();
-      await this.portalPage.setViewport({ width: 1400, height: 900 });
-      await this.portalPage.setUserAgent(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
-      );
-
-      // Set login cookies before navigating
-      await this.portalPage.setCookie(
-        { name: "aooog_login", value: this.authToken, domain: new URL(this.baseUrl).hostname, path: "/" },
-        { name: "aooog_cookie_lng", value: "en", domain: new URL(this.baseUrl).hostname, path: "/" },
-        { name: "account_name", value: this.config.username, domain: new URL(this.baseUrl).hostname, path: "/" },
-      );
-
-      // Navigate to portal
-      console.log("[CC-CCTV] Navigating to portal...");
-      await this.portalPage.goto(this.baseUrl + "/#", {
-        waitUntil: "networkidle2",
-        timeout: 60000,
-      });
-
-      // Wait for login to complete (check for logged-in indicator)
-      await this.portalPage.waitForTimeout(5000);
-
-      // Check if we're on the main dashboard (not login page)
-      const url = this.portalPage.url();
-      if (url.includes("/login")) {
-        console.error("[CC-CCTV] Still on login page, trying manual login...");
-        // Try calling login API from page context
-        await this.portalPage.evaluate(async (authToken, baseUrl) => {
-          const params = new URLSearchParams({
-            authentication: authToken,
-            localTime: new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }),
-            "domain[]": new URL(baseUrl).hostname,
-            _: Date.now().toString(),
-          });
-          await fetch(`${baseUrl}/AoooG_WebService.svc/Login?${params}`, { credentials: "include" });
-        }, this.authToken, this.baseUrl);
-
-        // Navigate again
-        await this.portalPage.goto(this.baseUrl + "/#", { waitUntil: "networkidle2", timeout: 30000 });
-        await this.portalPage.waitForTimeout(3000);
-      }
-
-      this.isLoggedIn = true;
-      this.isReady = true;
-      console.log("[CC-CCTV] ✅ Portal loaded and logged in");
-      return true;
-    } catch (err) {
-      console.error("[CC-CCTV] Init error:", err.message);
+    if (!this.config.username || !this.config.password) {
+      console.error("[CC-CCTV] No CarCentro credentials");
       return false;
     }
+
+    this.isLoggedIn = true;
+    this.isReady = true;
+    console.log("[CC-CCTV] ✅ Ready (sessions will login on-demand)");
+    return true;
   }
 
   /**
@@ -252,82 +208,100 @@ class CaptureSession {
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
     );
 
-    // Set login cookies
     const domain = new URL(this.baseUrl).hostname;
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    // Step 1: Set login cookies before any navigation
     await this.page.setCookie(
       { name: "aooog_login", value: this.authToken, domain, path: "/" },
       { name: "aooog_cookie_lng", value: "en", domain, path: "/" },
       { name: "account_name", value: this.username, domain, path: "/" },
     );
 
-    // Navigate to portal
+    // Step 2: Call Login API from page context first (sets server session)
+    console.log(`[CC-CCTV] Logging in for ${this.deviceName}...`);
+    await this.page.goto(this.baseUrl + "/login/", { waitUntil: "domcontentloaded", timeout: 30000 });
+    await sleep(2000);
+
+    // Do the login API call from browser context
+    await this.page.evaluate(async (authToken, baseUrl) => {
+      const localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
+      const params = new URLSearchParams({
+        authentication: authToken,
+        localTime: localTime,
+        "domain[]": new URL(baseUrl).hostname,
+        _: Date.now().toString(),
+      });
+      try {
+        await fetch(baseUrl + "/AoooG_WebService.svc/Login?" + params.toString(), { credentials: "include" });
+      } catch (e) { console.log("Login fetch error:", e); }
+    }, this.authToken, this.baseUrl);
+
+    await sleep(1000);
+
+    // Step 3: Navigate to main portal
     console.log(`[CC-CCTV] Navigating to portal for ${this.deviceName}...`);
-    await this.page.goto(this.baseUrl + "/#", { waitUntil: "networkidle2", timeout: 60000 });
-    await this.page.waitForTimeout(3000);
+    await this.page.goto(this.baseUrl + "/#", { waitUntil: "domcontentloaded", timeout: 60000 });
+    // Wait for portal JS to load and initialize
+    await sleep(8000);
 
-    // If redirected to login, do login from page context
-    if (this.page.url().includes("/login")) {
-      console.log("[CC-CCTV] On login page, performing login...");
-      await this.page.evaluate(async (authToken, baseUrl) => {
-        const params = new URLSearchParams({
-          authentication: authToken,
-          localTime: new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" }),
-          "domain[]": new URL(baseUrl).hostname,
-          _: Date.now().toString(),
-        });
-        await fetch(`${baseUrl}/AoooG_WebService.svc/Login?${params}`, { credentials: "include" });
-      }, this.authToken, this.baseUrl);
+    console.log(`[CC-CCTV] Portal loaded. URL: ${this.page.url()}`);
 
-      await this.page.goto(this.baseUrl + "/#", { waitUntil: "networkidle2", timeout: 30000 });
-      await this.page.waitForTimeout(3000);
-    }
-
-    console.log(`[CC-CCTV] Portal loaded. Clicking Video tab...`);
-
-    // Click Video tab
+    // Step 4: Click Video tab
     try {
-      // The Video tab link from the portal HTML
-      await this.page.evaluate(() => {
-        const tabs = document.querySelectorAll("a, span, div");
-        for (const el of tabs) {
-          if (el.textContent.trim() === "Video" || el.textContent.trim().includes("Video")) {
+      const clickedVideo = await this.page.evaluate(() => {
+        // Look for the Video tab specifically
+        const links = document.querySelectorAll("a[href], span, div");
+        for (const el of links) {
+          const text = el.textContent.trim();
+          if (text === "Video" && el.offsetParent !== null) {
             el.click();
-            return true;
+            return "clicked-text";
           }
         }
-        return false;
+        // Try by class/id patterns
+        const videoTab = document.querySelector('[data-options*="Video"], .tabs-title:contains("Video")');
+        if (videoTab) { videoTab.click(); return "clicked-selector"; }
+        return "not-found";
       });
-      await this.page.waitForTimeout(3000);
+      console.log(`[CC-CCTV] Video tab click: ${clickedVideo}`);
+      await sleep(3000);
     } catch (err) {
       console.warn(`[CC-CCTV] Could not click Video tab: ${err.message}`);
     }
 
-    console.log(`[CC-CCTV] Looking for device: ${this.deviceName} (ID: ${this.deviceID})...`);
-
-    // Find and click on the device in the tree/list
+    // Step 5: Find and click on the device
+    console.log(`[CC-CCTV] Looking for device: ${this.deviceName}...`);
     try {
-      await this.page.evaluate((deviceName) => {
-        // Search in tree nodes, table rows, etc.
-        const allElements = document.querySelectorAll("*");
-        for (const el of allElements) {
+      // Extract the bus name (after the dash, e.g., "TWEETY" from "N 7187 UG-TWEETY")
+      const busName = this.deviceName.includes("-") ? this.deviceName.split("-").pop().trim() : this.deviceName;
+
+      const clickedDevice = await this.page.evaluate((fullName, shortName) => {
+        const elements = document.querySelectorAll("tr td, .tree-title, .datagrid-cell, span");
+        for (const el of elements) {
           const text = el.textContent.trim();
-          // Match by device name (Alias like "N 7187 UG-TWEETY")
-          if (text === deviceName || text.includes(deviceName.split("-").pop())) {
-            if (el.offsetParent !== null) { // Visible element
-              el.click();
-              return true;
-            }
+          if ((text.includes(fullName) || text.includes(shortName)) && el.offsetParent !== null) {
+            // Try double-click (some grids need dblclick to open video)
+            el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+            el.click();
+            return text;
           }
         }
-        return false;
-      }, this.deviceName);
+        return null;
+      }, this.deviceName, busName);
 
-      await this.page.waitForTimeout(5000); // Wait for video player to initialize
+      if (clickedDevice) {
+        console.log(`[CC-CCTV] Clicked device: "${clickedDevice}"`);
+      } else {
+        console.warn(`[CC-CCTV] Device "${this.deviceName}" not found in video list`);
+      }
+
+      await sleep(8000); // Wait for video player to initialize and connect
     } catch (err) {
       console.warn(`[CC-CCTV] Could not click device: ${err.message}`);
     }
 
-    // Start frame capture loop
+    // Step 6: Start frame capture loop
     this.isCapturing = true;
     this.captureLoop();
 
