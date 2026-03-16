@@ -1251,6 +1251,49 @@ app.get("/api/video/cc-status", (req, res) => {
   });
 });
 
+// API: Get CarCentro iframe URL params for a device
+// Returns auth + deviceId needed to load the video iframe
+app.get("/api/video/cc-iframe-params/:imei", async (req, res) => {
+  try {
+    const { imei } = req.params;
+    const channel = parseInt(req.query.channel) || 1;
+
+    // Get vehicle info
+    const vehicle = await Vehicle.findOne({
+      imei: imei,
+      fleet_name: { $regex: /JURAGAN99-(AKAP|PARIWISATA|OPERASIONAL)/ },
+    }).lean();
+
+    if (!vehicle) {
+      return res.status(404).json({ error: "Not a CarCentro vehicle" });
+    }
+
+    // Get deviceID from video service or fetch from CarCentro
+    let deviceID = null;
+    const ccVideoSvc = global.__ccVideoService;
+    if (ccVideoSvc) {
+      deviceID = ccVideoSvc.getDeviceID(imei);
+    }
+
+    // Build auth token (same as CarCentro service uses)
+    const authToken = Buffer.from(
+      JSON.stringify({ name: config.carcentro.username, pwd: config.carcentro.password })
+    ).toString("base64");
+
+    res.json({
+      imei,
+      deviceId: deviceID,
+      channel,
+      auth: authToken,
+      vehicleName: vehicle.display_name || vehicle.name,
+      portalUrl: config.carcentro.baseUrl || "http://carcentro.aooog.com",
+      iframeUrl: `/carcentro-video.html?imei=${imei}&deviceId=${deviceID || 0}&channel=${channel}&auth=${encodeURIComponent(authToken)}&name=${encodeURIComponent(vehicle.display_name || vehicle.name)}`,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // API: Get vehicle summary for Command Center (36 hours)
 app.get("/api/command-center/vehicles", async (req, res) => {
   try {

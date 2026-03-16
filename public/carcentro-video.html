@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CarCentro CCTV</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      min-height: 100vh; padding: 20px;
+    }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid rgba(255,255,255,0.1);
+      border-top-color: #0066a1;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .status { font-size: 14px; color: #888; margin-bottom: 8px; }
+    .sub { font-size: 12px; color: #555; }
+    .done { color: #22c55e; }
+    .error { color: #ef4444; }
+    .btn {
+      margin-top: 20px; padding: 10px 24px;
+      background: #0066a1; color: white;
+      border: none; border-radius: 6px;
+      cursor: pointer; font-size: 13px;
+      text-decoration: none; display: inline-block;
+    }
+    .btn-secondary {
+      background: #333; border: 1px solid #555;
+    }
+    .actions { display: flex; gap: 10px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="spinner" id="spinner"></div>
+  <div class="status" id="status">Menghubungkan ke CarCentro...</div>
+  <div class="sub" id="sub"></div>
+  <div class="actions" id="actions" style="display:none;"></div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const AUTH_TOKEN = params.get('auth') || '';
+    const VEHICLE_NAME = decodeURIComponent(params.get('name') || 'Camera');
+    const CHANNEL = params.get('channel') || '1';
+    const BASE_URL = 'http://carcentro.aooog.com';
+
+    const $spinner = document.getElementById('spinner');
+    const $status = document.getElementById('status');
+    const $sub = document.getElementById('sub');
+    const $actions = document.getElementById('actions');
+
+    async function autoLogin() {
+      $status.textContent = 'Login ke CarCentro...';
+
+      try {
+        const localTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Jakarta' });
+        const loginParams = new URLSearchParams({
+          authentication: AUTH_TOKEN,
+          localTime: localTime,
+          'domain[]': 'carcentro.aooog.com',
+          _: Date.now().toString()
+        });
+
+        // Login — this sets session cookies
+        const resp = await fetch(`${BASE_URL}/AoooG_WebService.svc/Login?${loginParams}`, {
+          credentials: 'include'
+        });
+
+        $status.textContent = 'Login berhasil!';
+        $status.className = 'status done';
+        $sub.textContent = 'Mengalihkan ke portal...';
+
+        // Redirect to CarCentro portal (now logged in)
+        setTimeout(() => {
+          window.location.href = BASE_URL + '/#';
+        }, 800);
+
+      } catch (err) {
+        $spinner.style.display = 'none';
+        $status.textContent = 'Gagal login otomatis';
+        $status.className = 'status error';
+        $sub.textContent = err.message;
+        $actions.style.display = 'flex';
+        $actions.innerHTML = `
+          <button class="btn" onclick="location.reload()">Coba Lagi</button>
+          <a class="btn btn-secondary" href="${BASE_URL}" target="_self">Buka Portal Manual</a>
+        `;
+      }
+    }
+
+    if (AUTH_TOKEN) {
+      autoLogin();
+    } else {
+      $spinner.style.display = 'none';
+      $status.textContent = 'Parameter auth tidak ditemukan';
+      $status.className = 'status error';
+      $actions.style.display = 'flex';
+      $actions.innerHTML = `<a class="btn" href="${BASE_URL}" target="_self">Buka Portal Manual</a>`;
+    }
+  </script>
+</body>
+</html>
