@@ -1998,12 +1998,24 @@ async function main() {
   let globalQueue = null;
   let coordinateWorker = null; // Deklarasi coordinate worker
   let alarmStoreWorker = null; // Deklarasi alarm store worker
+  let solofleetWorker = null; // Deklarasi di sini supaya finally block bisa akses
+  let sfVideoService = null;
+  let carcentroWorker = null;
 
   let lastLoginTime = null;
   const RELOGIN_INTERVAL = 6 * 60 * 60 * 1000;
 
   try {
     console.log("🚀 Starting DS-TGTrack Monitor Service...\n");
+    
+    // Clean up stale Chrome lock file (prevents crash on restart)
+    const fs = require("fs");
+    const lockFile = path.join(__dirname, "chrome-session", "SingletonLock");
+    if (fs.existsSync(lockFile)) {
+      console.log("🧹 Removing stale Chrome lock file...");
+      try { fs.unlinkSync(lockFile); } catch (e) { /* ignore */ }
+    }
+    
     console.log("launching browser dengan persistent session...");
     browser = await puppeteer.launch(config.browser);
     page = await browser.newPage();
@@ -2108,8 +2120,6 @@ async function main() {
     initWebSocketServer(server); // Attach to HTTP server (port 3000, path /ws/copilot)
 
     // Initialize SoloFleet worker (if enabled)
-    let solofleetWorker = null;
-    let sfVideoService = null;
     if (config.solofleet.enabled) {
       solofleetWorker = new SoloFleetWorker(config.solofleet, {
         ADAS,
@@ -2157,7 +2167,6 @@ async function main() {
     }
 
     // Initialize CarCentro (AoooG) worker (if enabled)
-    let carcentroWorker = null;
     if (config.carcentro.enabled) {
       carcentroWorker = new CarCentroWorker(config.carcentro);
       await carcentroWorker.start(config.carcentro.interval);
