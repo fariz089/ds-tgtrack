@@ -604,6 +604,7 @@ function closeImage() {
 let hlsPlayer = null;
 let mpegtsPlayer = null;
 let currentStreamAttempt = 0; // Track retry attempts
+let workerFailed = false; // If worker fails, disable it on retry
 const MAX_STREAM_RETRIES = 2;
 
 // ── Main entry point ──────────────────────────────────────
@@ -865,7 +866,8 @@ function streamMpegTS_FLV(imei, channel, vehicleName, streamData) {
 
   // ALWAYS use HTTP-FLV via our proxy — direct WS/HLS to TGTrack gateway
   // is blocked by CORS (origin adas.j99t.tech not allowed by livedvr.tripsdd.com)
-  let streamUrl = `/api/video/stream/${imei}/${channel}`;
+  // IMPORTANT: Must use absolute URL because mpegts.js Worker cannot resolve relative URLs
+  let streamUrl = `${window.location.origin}/api/video/stream/${imei}/${channel}`;
   console.log("[mpegts] Using HTTP-FLV proxy:", streamUrl);
 
   info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - Camera ${channel} (Connecting FLV...)`;
@@ -881,7 +883,8 @@ function streamMpegTS_FLV(imei, channel, vehicleName, streamData) {
 
     mpegtsPlayer = mpegts.createPlayer(playerConfig, {
       // mpegts.js specific config for low latency
-      enableWorker: true,
+      // Disable worker if previous attempt had worker URL parse error
+      enableWorker: !workerFailed,
       enableStashBuffer: false, // Disable stash for lowest latency
       stashInitialSize: 128, // Small initial buffer
       lazyLoad: false,
@@ -917,6 +920,12 @@ function streamMpegTS_FLV(imei, channel, vehicleName, streamData) {
     mpegtsPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
       console.error("[mpegts] Error:", errorType, errorDetail, errorInfo);
       clearTimeout(loadTimeout);
+      // Detect worker URL parse failures — disable worker for retry
+      const errMsg = `${errorType}: ${errorDetail} ${errorInfo?.msg || ''}`;
+      if (errMsg.includes('Failed to parse URL') || errMsg.includes('WorkerGlobalScope')) {
+        console.warn("[mpegts] Worker URL parse failure detected, disabling worker for retry");
+        workerFailed = true;
+      }
       handleFLVError(imei, channel, vehicleName, `${errorType}: ${errorDetail}`);
     });
 
