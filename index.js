@@ -31,6 +31,7 @@ const SoloFleetVideoService = require("./solofleetVideoService");
 const CarCentroWorker = require("./carcentroWorker");
 const CarCentroVideoService = require("./carcentroVideoService");
 const CarCentroService = require("./carcentroService");
+const CarCentroCCTVService = require("./carcentroCCTVService");
 
 // CORS configuration - allow psgrx from different origins
 const allowedOrigins = [
@@ -919,29 +920,15 @@ app.get("/api/video/check/:imei/:channel", checkVideoAuth, async (req, res) => {
     }).lean();
 
     if (ccVehicle) {
-      // CarCentro: check if video service is available for proxied streaming
-      const ccVideoSvc = global.__ccVideoService;
-      if (ccVideoSvc && ccVideoSvc.isCarCentroDevice(imei)) {
-        const status = ccVideoSvc.getStreamStatus(imei, parseInt(channel));
-        return res.json({
-          imei,
-          channel: parseInt(channel),
-          available: true,
-          is_present: true,
-          source: "carcentro",
-          streaming: status.active,
-          portal_url: `http://carcentro.aooog.com`,
-        });
-      }
-      // Fallback: video service not ready, redirect to portal
+      const cctvSvc = global.__ccCCTVService;
       return res.json({
         imei,
         channel: parseInt(channel),
         available: true,
         is_present: true,
         source: "carcentro",
-        portal_url: `http://carcentro.aooog.com`,
-        message: "Video streaming available via CarCentro portal",
+        cctv_ready: !!(cctvSvc && cctvSvc.isReady),
+        mjpeg_url: `/api/video/cc-live/${imei}/${channel}`,
       });
     }
 
@@ -1240,15 +1227,77 @@ app.post("/api/video/cc-stop/:imei/:channel", async (req, res) => {
 // API: CarCentro video service status
 app.get("/api/video/cc-status", (req, res) => {
   const svc = global.__ccVideoService;
-  if (!svc) {
-    return res.json({ enabled: false });
-  }
+  const cctvSvc = global.__ccCCTVService;
   res.json({
-    enabled: true,
-    ready: svc.isReady,
-    devices: svc.deviceMap.size,
-    activeStreams: svc.getAllStatus(),
+    enabled: !!(svc || cctvSvc),
+    videoService: svc ? { ready: svc.isReady, devices: svc.deviceMap.size } : null,
+    cctvService: cctvSvc ? cctvSvc.getStatus() : null,
   });
+});
+
+// API: CarCentro CCTV live MJPEG stream via Puppeteer screen capture
+app.get("/api/video/cc-live/:imei/:channel", async (req, res) => {
+  const cctvSvc = global.__ccCCTVService;
+  if (!cctvSvc || !cctvSvc.isReady) {
+    return res.status(503).json({ error: "CarCentro CCTV service not ready" });
+  }
+
+  const { imei, channel } = req.params;
+  const ch = parseInt(channel) || 1;
+
+  // Get vehicle info
+  const vehicle = await Vehicle.findOne({
+    imei: imei,
+    fleet_name: { $regex: /JURAGAN99-(AKAP|PARIWISATA|OPERASIONAL)/ },
+  }).lean();
+
+  if (!vehicle) {
+    return res.status(404).json({ error: "Not a CarCentro vehicle" });
+  }
+
+  // Get deviceID
+  const ccVideoSvc = global.__ccVideoService;
+  let deviceID = ccVideoSvc ? ccVideoSvc.getDeviceID(imei) : null;
+
+  const deviceName = vehicle.display_name || vehicle.name || imei;
+
+  try {
+    // Start or reuse capture session
+    const session = await cctvSvc.startCapture(imei, ch, deviceName, deviceID);
+
+    // Set MJPEG headers
+    res.writeHead(200, {
+      "Content-Type": "multipart/x-mixed-replace; boundary=boundary",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "Pragma": "no-cache",
+      "Connection": "keep-alive",
+    });
+
+    // Add this client to receive frames
+    session.addClient(res);
+  } catch (err) {
+    console.error("[CC-CCTV] Stream error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: CarCentro CCTV single snapshot
+app.get("/api/video/cc-snapshot/:imei/:channel", async (req, res) => {
+  const cctvSvc = global.__ccCCTVService;
+  if (!cctvSvc || !cctvSvc.isReady) {
+    return res.status(503).json({ error: "CCTV service not ready" });
+  }
+
+  const { imei, channel } = req.params;
+  const key = `${imei}:${parseInt(channel) || 1}`;
+  const session = cctvSvc.sessions.get(key);
+
+  if (session && session.lastFrame) {
+    res.set("Content-Type", "image/jpeg");
+    res.send(session.lastFrame);
+  } else {
+    res.status(404).json({ error: "No active session for this device" });
+  }
 });
 
 // API: Get CarCentro iframe URL params for a device
@@ -2829,6 +2878,15 @@ async function main() {
       const ccVideoService = new CarCentroVideoService(config.carcentro);
       await ccVideoService.init();
       global.__ccVideoService = ccVideoService; // For WebSocket upgrade handler
+
+      // Initialize CarCentro CCTV Service (Puppeteer screen capture)
+      const ccCCTVService = new CarCentroCCTVService(config.carcentro, browser);
+      global.__ccCCTVService = ccCCTVService;
+      // Init in background (takes time to load portal)
+      ccCCTVService.init().then(ok => {
+        if (ok) console.log("✅ CarCentro CCTV service ready (Puppeteer screen capture)");
+        else console.warn("⚠ CarCentro CCTV service init failed");
+      }).catch(err => console.error("❌ CarCentro CCTV service error:", err.message));
 
       // Register devices from CarCentro track data
       (async () => {

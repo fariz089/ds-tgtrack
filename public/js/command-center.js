@@ -636,9 +636,10 @@ function openCamera(imei, channel, vehicleName) {
       console.log("[Camera] Check response:", data);
 
       if (data.source === "carcentro") {
-        // CarCentro: stream via WebSocket proxy + JMuxer (same as SoloFleet)
-        player.style.display = "";
-        streamCarCentro(imei, channel, vehicleName);
+        // CarCentro: MJPEG stream via Puppeteer screen capture
+        player.style.display = "none";
+        const mjpegUrl = data.mjpeg_url || `/api/video/cc-live/${imei}/${channel}`;
+        streamCarCentroMJPEG(mjpegUrl, imei, channel, vehicleName, data.cctv_ready);
         return;
       }
 
@@ -691,260 +692,90 @@ function openCamera(imei, channel, vehicleName) {
     });
 }
 
-// ── CarCentro CCTV Handler ──────────────────────────────────
+// ── CarCentro CCTV Handler (Puppeteer MJPEG) ─────────────────
+let ccMjpegImg = null;
+
 function openCarCentroCCTV(imei, channel, vehicleName, channelName) {
   console.log(`[CarCentro CCTV] Opening: ${vehicleName} - ${channelName} (ch${channel})`);
-
   const modal = document.getElementById("videoModal");
-  const player = document.getElementById("videoPlayer");
-  const info = document.getElementById("videoInfo");
-
   cleanupAllPlayers();
-  player.src = "";
-  player.style.display = "none";
-
-  info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - ${channelName} (Menghubungkan...)`;
+  document.getElementById("videoPlayer").style.display = "none";
+  document.getElementById("videoInfo").innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - ${channelName} (Menghubungkan...)`;
   modal.classList.add("active");
-
-  // Use iframe approach for CarCentro
-  streamCarCentro(imei, channel, vehicleName);
+  streamCarCentroMJPEG(`/api/video/cc-live/${imei}/${channel}`, imei, channel, vehicleName, true);
 }
 
-// ── CarCentro stream (iframe primary, WS proxy fallback) ─────
-let ccJmuxer = null;
-let ccWebSocket = null;
-
-function streamCarCentro(imei, channel, vehicleName) {
+function streamCarCentroMJPEG(mjpegUrl, imei, channel, vehicleName, cctvReady) {
   const player = document.getElementById("videoPlayer");
   const info = document.getElementById("videoInfo");
-
   cleanupCarCentroStream();
   player.style.display = "none";
-  info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - Camera ${channel} (Memuat CCTV...)`;
 
-  // Get login URL from server
-  fetch(`/api/video/cc-iframe-params/${imei}?channel=${channel}`)
-    .then(r => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.json();
-    })
-    .then(params => {
-      console.log("[CarCentro] params:", params);
-      // Show CarCentro portal UI with server-side login link
-      showCarCentroCCTVModal(params, imei, channel, vehicleName);
-    })
-    .catch(err => {
-      console.error("[CarCentro] params error:", err);
-      showCarCentroPortalFallback(imei, channel, vehicleName);
-    });
-}
-
-// ── Primary: CarCentro CCTV popup player ──────────────────────
-function showCarCentroCCTVModal(params, imei, channel, vehicleName) {
-  const player = document.getElementById("videoPlayer");
-  const info = document.getElementById("videoInfo");
-
-  player.style.display = "none";
-
-  // Build the player URL (served from our domain, uses reverse proxy for all CarCentro resources)
-  const playerUrl = `/carcentro-player.html?imei=${imei}&deviceId=${params.deviceId || 0}&channel=${channel}&name=${encodeURIComponent(vehicleName)}`;
-
-  info.innerHTML = `
-    <div style="text-align:center;padding:30px;max-width:500px;margin:0 auto;">
-      <div style="width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,#0066a1 0%,#003d5c 100%);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
-        <i class="fas fa-video" style="font-size:24px;color:white;"></i>
-      </div>
-      <div style="font-size:17px;font-weight:600;margin-bottom:6px;">${vehicleName}</div>
-      <div style="font-size:13px;color:#0066a1;margin-bottom:16px;">Camera ${channel} — CarCentro CCTV</div>
-      
-      <div id="ccPopupStatus" style="font-size:13px;color:#888;margin-bottom:20px;">
-        <i class="fas fa-spinner fa-spin"></i> Membuka CCTV player...
-      </div>
-      
-      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
-        <button id="ccOpenBtn" onclick="openCarCentroPlayer('${playerUrl}')"
-           style="padding:10px 24px;background:linear-gradient(135deg,#0066a1 0%,#003d5c 100%);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(0,102,161,0.3);">
-          <i class="fas fa-video"></i> Buka CCTV Player
+  if (!cctvReady) {
+    info.innerHTML = `
+      <div style="text-align:center;padding:30px;">
+        <i class="fas fa-video-slash" style="font-size:36px;color:#666;margin-bottom:12px;display:block;"></i>
+        <div style="font-size:15px;font-weight:600;margin-bottom:6px;">${vehicleName} - Camera ${channel}</div>
+        <div style="font-size:13px;color:#999;margin-bottom:16px;">CCTV service sedang loading, coba lagi...</div>
+        <button onclick="closeVideo(); setTimeout(() => openCamera('${imei}', ${channel}, '${vehicleName}'), 300);"
+           style="padding:8px 20px;background:#0066a1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">
+          <i class="fas fa-redo"></i> Coba Lagi
         </button>
-        <button onclick="retryCarCentroCCTV('${imei}', ${channel}, '${vehicleName}')"
-           style="padding:10px 18px;background:#222;color:#ccc;border:1px solid #444;border-radius:8px;cursor:pointer;font-size:13px;">
-          <i class="fas fa-redo"></i> Retry
-        </button>
-      </div>
-      
-      <div style="margin-top:20px;padding:12px;background:rgba(0,102,161,0.1);border-radius:8px;border:1px solid rgba(0,102,161,0.2);">
-        <div style="font-size:11px;color:#888;line-height:1.5;">
-          <i class="fas fa-info-circle" style="color:#0066a1;"></i>
-          CCTV player memuat DVR langsung dari CarCentro melalui server proxy.<br>
-          Video ditampilkan di window terpisah.
-        </div>
-      </div>
-    </div>
-  `;
-
-  // Auto-open
-  setTimeout(() => openCarCentroPlayer(playerUrl), 300);
-}
-
-function openCarCentroPlayer(url) {
-  const statusEl = document.getElementById("ccPopupStatus");
-  // Open as a popup window with specific size
-  const win = window.open(url, 'carcentro_cctv', 'width=900,height=650,menubar=no,toolbar=no,location=no,status=no');
-  
-  if (win) {
-    if (statusEl) {
-      statusEl.innerHTML = `<span style="color:#22c55e;"><i class="fas fa-check-circle"></i> CCTV player terbuka</span>`;
-    }
-    const btn = document.getElementById("ccOpenBtn");
-    if (btn) btn.innerHTML = '<i class="fas fa-video"></i> Buka Lagi';
-  } else {
-    // Popup blocked — try new tab
-    const win2 = window.open(url, '_blank');
-    if (win2) {
-      if (statusEl) statusEl.innerHTML = `<span style="color:#22c55e;"><i class="fas fa-check-circle"></i> Player terbuka di tab baru</span>`;
-    } else {
-      if (statusEl) statusEl.innerHTML = `<span style="color:#f59e0b;"><i class="fas fa-exclamation-triangle"></i> Popup di-block — klik tombol di atas</span>`;
-    }
-  }
-}
-
-function onCarCentroOpened() {}
-
-function retryCarCentroCCTV(imei, channel, vehicleName) {
-  cleanupCarCentroStream();
-  closeVideo();
-  setTimeout(() => openCamera(imei, channel, vehicleName), 300);
-}
-
-// ── Fallback: WS proxy (kept for future when protocol is decoded) ──
-function initCarCentroWSFallback(imei, channel, vehicleName) {
-  const player = document.getElementById("videoPlayer");
-  const info = document.getElementById("videoInfo");
-
-  // Check if JMuxer is available for WS fallback
-  if (typeof JMuxer === "undefined") {
-    // No JMuxer, just show portal link
-    showCarCentroPortalFallback(imei, channel, vehicleName);
+      </div>`;
     return;
   }
 
-  player.style.display = "";
-  info.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${vehicleName} - Camera ${channel} (Trying WS proxy...)`;
-
-  try {
-    ccJmuxer = new JMuxer({
-      node: "videoPlayer",
-      mode: "video",
-      flushingTime: 1000,
-      clearBuffer: true,
-      fps: 15,
-      debug: false,
-      onError: function (data) {
-        console.error("[CarCentro WS] JMuxer error:", data);
-      },
-    });
-
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/api/video/cc-stream/${imei}/${channel}`;
-    console.log("[CarCentro WS] URL:", wsUrl);
-
-    ccWebSocket = new WebSocket(wsUrl);
-    ccWebSocket.binaryType = "arraybuffer";
-
-    let framesReceived = 0;
-
-    // If no frames after 10s, fall back to portal link
-    let wsTimeout = setTimeout(() => {
-      if (framesReceived === 0) {
-        console.log("[CarCentro WS] No frames, falling back to portal");
-        cleanupCarCentroStream();
-        showCarCentroPortalFallback(imei, channel, vehicleName);
-      }
-    }, 10000);
-
-    ccWebSocket.onopen = () => {
-      console.log("[CarCentro WS] connected");
-    };
-
-    ccWebSocket.onmessage = (event) => {
-      // Check for JSON control messages
-      if (event.data instanceof ArrayBuffer && event.data.byteLength < 500) {
-        try {
-          const text = new TextDecoder().decode(event.data);
-          if (text.startsWith("{")) {
-            console.log("[CarCentro WS] Control:", text);
-            return;
-          }
-        } catch (e) {}
-      }
-
-      framesReceived++;
-      const data = new Uint8Array(event.data);
-      ccJmuxer.feed({ video: data });
-
-      if (framesReceived === 1) {
-        clearTimeout(wsTimeout);
-        info.textContent = `${vehicleName} - Camera ${channel} (Live - CarCentro WS)`;
-        player.play().catch(() => {});
-      }
-    };
-
-    ccWebSocket.onerror = () => {
-      clearTimeout(wsTimeout);
-      cleanupCarCentroStream();
-      showCarCentroPortalFallback(imei, channel, vehicleName);
-    };
-
-    ccWebSocket.onclose = (event) => {
-      clearTimeout(wsTimeout);
-      if (framesReceived === 0) {
-        showCarCentroPortalFallback(imei, channel, vehicleName);
-      }
-    };
-  } catch (err) {
-    console.error("[CarCentro WS] Init error:", err);
-    showCarCentroPortalFallback(imei, channel, vehicleName);
-  }
-}
-
-// ── Last resort: portal link ─────────────────────────────────
-function showCarCentroPortalFallback(imei, channel, vehicleName) {
-  const player = document.getElementById("videoPlayer");
-  const info = document.getElementById("videoInfo");
-
-  player.style.display = "none";
   info.innerHTML = `
-    <div style="text-align:center;padding:30px;">
-      <i class="fas fa-video" style="font-size:36px;color:#0066a1;margin-bottom:15px;display:block;"></i>
-      <div style="font-size:16px;font-weight:600;margin-bottom:5px;">${vehicleName}</div>
-      <div style="font-size:14px;color:#0066a1;margin-bottom:15px;">Camera ${channel}</div>
-      <div style="font-size:13px;color:#666;margin-bottom:20px;">
-        CCTV streaming tersedia melalui portal CarCentro.<br>
-        Klik tombol di bawah untuk membuka portal.
+    <div style="position:relative;width:100%;max-width:900px;margin:0 auto;">
+      <img id="ccMjpegStream" src="${mjpegUrl}" 
+        style="width:100%;border-radius:8px;background:#000;min-height:300px;display:block;"
+        alt="CCTV Stream" />
+      <div id="ccStreamLoading" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);border-radius:8px;">
+        <i class="fas fa-spinner fa-spin" style="font-size:24px;color:#0066a1;margin-bottom:10px;"></i>
+        <div style="font-size:13px;color:#888;">Memuat CCTV stream...</div>
+        <div style="font-size:11px;color:#555;margin-top:4px;">Puppeteer screen capture — tunggu 5-10 detik</div>
       </div>
-      <div style="display:flex;gap:10px;justify-content:center;">
-        <button onclick="retryCarCentroCCTV('${imei}', ${channel}, '${vehicleName}')"
-           style="padding:10px 20px;background:#0066a1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">
+      <div id="ccStreamError" style="display:none;flex-direction:column;align-items:center;justify-content:center;padding:40px;">
+        <i class="fas fa-video-slash" style="font-size:36px;color:#666;margin-bottom:12px;"></i>
+        <div style="font-size:14px;color:#999;margin-bottom:12px;">Stream gagal dimuat</div>
+        <button onclick="closeVideo(); setTimeout(() => openCamera('${imei}', ${channel}, '${vehicleName}'), 300);"
+           style="padding:8px 20px;background:#0066a1;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">
           <i class="fas fa-redo"></i> Coba Lagi
         </button>
-        <a href="http://carcentro.aooog.com" target="_blank"
-           style="display:inline-flex;align-items:center;gap:6px;padding:10px 20px;background:#333;color:white;border-radius:6px;text-decoration:none;font-size:13px;border:1px solid #555;">
-          <i class="fas fa-external-link-alt"></i> Buka Portal
-        </a>
       </div>
-    </div>
-  `;
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding:0 4px;">
+        <div style="font-size:13px;color:#ccc;">
+          <i class="fas fa-video" style="color:#0066a1;margin-right:6px;"></i>
+          ${vehicleName} - Camera ${channel}
+          <span style="font-size:11px;color:#666;margin-left:6px;">CarCentro CCTV</span>
+        </div>
+        <button onclick="closeVideo(); setTimeout(() => openCamera('${imei}', ${channel}, '${vehicleName}'), 300);"
+           style="padding:4px 12px;background:#333;color:#ccc;border:1px solid #555;border-radius:4px;cursor:pointer;font-size:11px;">
+          <i class="fas fa-redo"></i> Refresh
+        </button>
+      </div>
+    </div>`;
+
+  ccMjpegImg = document.getElementById("ccMjpegStream");
+
+  // Hide loading when first frame arrives
+  if (ccMjpegImg) {
+    ccMjpegImg.onload = function() {
+      var ld = document.getElementById("ccStreamLoading");
+      if (ld) ld.style.display = "none";
+    };
+    ccMjpegImg.onerror = function() {
+      ccMjpegImg.style.display = "none";
+      var err = document.getElementById("ccStreamError");
+      if (err) err.style.display = "flex";
+    };
+  }
 }
 
 function cleanupCarCentroStream() {
-  // Cleanup WS fallback
-  if (ccWebSocket) {
-    try { ccWebSocket.close(); } catch (e) {}
-    ccWebSocket = null;
-  }
-  if (ccJmuxer) {
-    try { ccJmuxer.destroy(); } catch (e) {}
-    ccJmuxer = null;
+  if (ccMjpegImg) {
+    try { ccMjpegImg.src = ""; } catch (e) {}
+    ccMjpegImg = null;
   }
 }
 
