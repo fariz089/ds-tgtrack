@@ -1350,39 +1350,60 @@ const CC_AUTH_TOKEN = config.carcentro.username && config.carcentro.password
 
 // Proxy: Login — handle both API call and page navigation
 app.get("/cc-proxy/login", async (req, res) => {
-  try {
-    const localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
-    const loginParams = new URLSearchParams({
-      authentication: CC_AUTH_TOKEN,
-      localTime,
-      "domain[]": new URL(CC_BASE_URL).hostname,
-      _: Date.now().toString(),
-    });
+  const wantsJson = (req.headers.accept || "").includes("json");
 
-    const loginUrl = `${CC_BASE_URL}/AoooG_WebService.svc/Login?${loginParams}`;
+  // If it's an XHR/API call, proxy the login and return JSON
+  if (wantsJson || req.headers["x-requested-with"]) {
+    try {
+      const localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
+      const loginParams = new URLSearchParams({
+        authentication: CC_AUTH_TOKEN,
+        localTime,
+        "domain[]": new URL(CC_BASE_URL).hostname,
+        _: Date.now().toString(),
+      });
 
-    // Check if this is an API call or a page navigation
-    const wantsJson = (req.headers.accept || "").includes("json");
-
-    const resp = await axios.get(loginUrl, {
-      headers: { Accept: "*/*", "User-Agent": "Mozilla/5.0" },
-      timeout: 15000,
-    });
-
-    if (wantsJson) {
-      res.json({ ok: true, data: resp.data });
-    } else {
-      // Page navigation — do login then redirect to portal
-      res.redirect(302, "/cc-proxy/portal");
-    }
-  } catch (err) {
-    const wantsJson = (req.headers.accept || "").includes("json");
-    if (wantsJson) {
-      res.status(500).json({ ok: false, error: err.message });
-    } else {
-      res.redirect(302, "/cc-proxy/portal");
+      const resp = await axios.get(`${CC_BASE_URL}/AoooG_WebService.svc/Login?${loginParams}`, {
+        headers: { Accept: "*/*", "User-Agent": "Mozilla/5.0" },
+        timeout: 15000,
+      });
+      return res.json({ ok: true, data: resp.data });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
     }
   }
+
+  // Page navigation — serve a page that does client-side login then redirects to portal
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CarCentro Login</title>
+<style>
+  body{background:#1a1a2e;color:#fff;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;}
+  .spin{width:30px;height:30px;border:3px solid rgba(255,255,255,.1);border-top-color:#0066a1;border-radius:50%;animation:s .7s linear infinite;margin-bottom:12px;}
+  @keyframes s{to{transform:rotate(360deg)}}
+  .msg{font-size:13px;color:#888;}
+</style></head><body>
+<div class="spin"></div>
+<div class="msg" id="msg">Login ke CarCentro...</div>
+<script>
+var auth = "${CC_AUTH_TOKEN}";
+var localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
+var params = "authentication=" + encodeURIComponent(auth)
+  + "&localTime=" + encodeURIComponent(localTime)
+  + "&domain%5B%5D=carcentro.aooog.com"
+  + "&_=" + Date.now();
+
+fetch("/cc-proxy/AoooG_WebService.svc/Login?" + params, { credentials: "include" })
+  .then(function(r){ return r.text(); })
+  .then(function(){
+    document.getElementById("msg").textContent = "Login berhasil, memuat portal...";
+    sessionStorage.setItem("cc_logged_in", "1");
+    window.location.replace("/cc-proxy/portal");
+  })
+  .catch(function(){
+    document.getElementById("msg").textContent = "Memuat portal...";
+    window.location.replace("/cc-proxy/portal");
+  });
+</script></body></html>`);
 });
 
 // Handle bare /login (portal JS redirects here without /cc-proxy prefix)
@@ -1492,7 +1513,7 @@ app.get("/cc-proxy/portal", async (req, res) => {
     html = html.replace(/http:\/\/carcentro\.aooog\.com/g, "/cc-proxy");
     // Rewrite all root-relative paths to go through proxy
     html = html.replace(/(href|src|action)="\/(?!cc-proxy)/g, '$1="/cc-proxy/');
-    // Rewrite unquoted root paths in JS: '/login' '/assets/' etc
+    // Rewrite unquoted root paths in JS
     html = html.replace(/['"]\/login['"]/g, '"/cc-proxy/login"');
     html = html.replace(/['"]\/assets\//g, '"/cc-proxy/assets/');
     // Rewrite relative asset paths
@@ -1505,28 +1526,66 @@ app.get("/cc-proxy/portal", async (req, res) => {
     html = html.replace(/wss?:\/\/live\.aooog\.com:9661\/?/g, wsProxyUrl);
     html = html.replace(/["']wss?:\/\/live\.aooog\.com:9661\/?["']/g, `"${wsProxyUrl}"`);
 
-    // Inject a base tag and override to catch any remaining absolute paths
-    // Also remove any CSP meta tags that would block our scripts
+    // Inject auto-login script BEFORE all other scripts
+    // This runs in the browser context so cookies are set correctly
+    const autoLoginScript = `
+<script>
+// Auto-login to CarCentro before portal JS initializes
+(function(){
+  var AUTH = "${CC_AUTH_TOKEN}";
+  var done = sessionStorage.getItem("cc_logged_in");
+  if (done) return; // Already logged in this session
+
+  // Block page load until login completes
+  var blocker = document.createElement("div");
+  blocker.id = "cc-auto-login-blocker";
+  blocker.style.cssText = "position:fixed;inset:0;background:#1a1a2e;z-index:999999;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:sans-serif;";
+  blocker.innerHTML = '<div style="width:36px;height:36px;border:3px solid rgba(255,255,255,.1);border-top-color:#0066a1;border-radius:50%;animation:ccspin .7s linear infinite;margin-bottom:14px;"></div><div style="font-size:13px;color:#888;">Login ke CarCentro...</div><style>@keyframes ccspin{to{transform:rotate(360deg)}}</style>';
+  document.documentElement.appendChild(blocker);
+
+  var localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
+  var params = "authentication=" + encodeURIComponent(AUTH)
+    + "&localTime=" + encodeURIComponent(localTime)
+    + "&domain%5B%5D=carcentro.aooog.com"
+    + "&_=" + Date.now();
+
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", "/cc-proxy/AoooG_WebService.svc/Login?" + params, false); // SYNCHRONOUS
+  xhr.setRequestHeader("Accept", "*/*");
+  try {
+    xhr.send();
+    console.log("[CC-AutoLogin] Status:", xhr.status);
+    if (xhr.status === 200) {
+      sessionStorage.setItem("cc_logged_in", "1");
+      console.log("[CC-AutoLogin] Login OK");
+    }
+  } catch(e) {
+    console.error("[CC-AutoLogin] Error:", e);
+  }
+
+  // Remove blocker after a short delay
+  setTimeout(function(){
+    var b = document.getElementById("cc-auto-login-blocker");
+    if (b) b.remove();
+  }, 500);
+})();
+</script>`;
+
+    // Inject before </head> so it runs before portal scripts
     html = html.replace(/<head>/i, `<head>
 <base href="/cc-proxy/">
-<script>
-// Override navigation to /login -> /cc-proxy/login
-(function(){
-  var origAssign = Object.getOwnPropertyDescriptor(Location.prototype, 'href');
-  // Intercept window.location changes
-  if (window.location.pathname === '/login') {
-    window.location.replace('/cc-proxy/login');
-  }
-})();
-</script>`);
+${autoLoginScript}`);
 
     // Remove CSP meta tags
     html = html.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
-    // Remove X-Frame-Options meta
     html = html.replace(/<meta[^>]*x-frame-options[^>]*>/gi, '');
 
+    // Intercept login redirects: replace any JS that does location='/login'
+    html = html.replace(/location\s*=\s*['"]\/login['"]/g, "location='/cc-proxy/portal'");
+    html = html.replace(/location\.href\s*=\s*['"]\/login['"]/g, "location.href='/cc-proxy/portal'");
+    html = html.replace(/window\.location\s*=\s*['"]\/login['"]/g, "window.location='/cc-proxy/portal'");
+
     res.set("Content-Type", "text/html; charset=utf-8");
-    // Allow iframe embedding, no CSP restrictions
     res.set("X-Frame-Options", "SAMEORIGIN");
     res.removeHeader("Content-Security-Policy");
     res.send(html);
@@ -1593,8 +1652,12 @@ app.all("/cc-proxy/*", async (req, res) => {
       js = js.replace(/http:\/\/carcentro\.aooog\.com/g, "/cc-proxy");
       js = js.replace(/wss?:\/\/live\.aooog\.com:9661\/?/g,
         `wss://${req.get("host")}/cc-proxy/ws`);
-      js = js.replace(/"\/login"/g, '"/cc-proxy/login"');
-      js = js.replace(/'\/login'/g, "'/cc-proxy/login'");
+      js = js.replace(/"\/login"/g, '"/cc-proxy/portal"');
+      js = js.replace(/'\/login'/g, "'/cc-proxy/portal'");
+      // Intercept login redirects in JS
+      js = js.replace(/location\s*=\s*['"]\/login['"]/g, "location='/cc-proxy/portal'");
+      js = js.replace(/location\.href\s*=\s*['"]\/login['"]/g, "location.href='/cc-proxy/portal'");
+      js = js.replace(/window\.location\s*=\s*['"]\/login['"]/g, "window.location='/cc-proxy/portal'");
       js = js.replace(/"\/AoooG_WebService/g, '"/cc-proxy/AoooG_WebService');
       js = js.replace(/'\/AoooG_WebService/g, "'/cc-proxy/AoooG_WebService");
       res.send(js);
