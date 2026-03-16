@@ -739,16 +739,15 @@ function streamCarCentro(imei, channel, vehicleName) {
     });
 }
 
-// ── Primary: CarCentro server-side login + redirect ───────────
+// ── Primary: CarCentro CCTV popup player ──────────────────────
 function showCarCentroCCTVModal(params, imei, channel, vehicleName) {
   const player = document.getElementById("videoPlayer");
   const info = document.getElementById("videoInfo");
 
   player.style.display = "none";
 
-  // loginUrl does server-side login then redirects to CarCentro portal
-  // No mixed content because the server handles the HTTP login
-  const loginUrl = params.loginUrl || params.portalUrl;
+  // Build the player URL (served from our domain, uses reverse proxy for all CarCentro resources)
+  const playerUrl = `/carcentro-player.html?imei=${imei}&deviceId=${params.deviceId || 0}&channel=${channel}&name=${encodeURIComponent(vehicleName)}`;
 
   info.innerHTML = `
     <div style="text-align:center;padding:30px;max-width:500px;margin:0 auto;">
@@ -759,15 +758,14 @@ function showCarCentroCCTVModal(params, imei, channel, vehicleName) {
       <div style="font-size:13px;color:#0066a1;margin-bottom:16px;">Camera ${channel} — CarCentro CCTV</div>
       
       <div id="ccPopupStatus" style="font-size:13px;color:#888;margin-bottom:20px;">
-        <i class="fas fa-spinner fa-spin"></i> Membuka CarCentro portal...
+        <i class="fas fa-spinner fa-spin"></i> Membuka CCTV player...
       </div>
       
       <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
-        <a id="ccOpenBtn" href="${loginUrl}" target="_blank"
-           onclick="onCarCentroOpened()"
-           style="padding:10px 24px;background:linear-gradient(135deg,#0066a1 0%,#003d5c 100%);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(0,102,161,0.3);text-decoration:none;display:inline-flex;align-items:center;gap:8px;">
-          <i class="fas fa-external-link-alt"></i> Buka CarCentro CCTV
-        </a>
+        <button id="ccOpenBtn" onclick="openCarCentroPlayer('${playerUrl}')"
+           style="padding:10px 24px;background:linear-gradient(135deg,#0066a1 0%,#003d5c 100%);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(0,102,161,0.3);">
+          <i class="fas fa-video"></i> Buka CCTV Player
+        </button>
         <button onclick="retryCarCentroCCTV('${imei}', ${channel}, '${vehicleName}')"
            style="padding:10px 18px;background:#222;color:#ccc;border:1px solid #444;border-radius:8px;cursor:pointer;font-size:13px;">
           <i class="fas fa-redo"></i> Retry
@@ -777,40 +775,40 @@ function showCarCentroCCTVModal(params, imei, channel, vehicleName) {
       <div style="margin-top:20px;padding:12px;background:rgba(0,102,161,0.1);border-radius:8px;border:1px solid rgba(0,102,161,0.2);">
         <div style="font-size:11px;color:#888;line-height:1.5;">
           <i class="fas fa-info-circle" style="color:#0066a1;"></i>
-          Login otomatis via server — klik tombol di atas untuk membuka portal CCTV.<br>
-          Video akan tampil langsung di tab baru.
+          CCTV player memuat DVR langsung dari CarCentro melalui server proxy.<br>
+          Video ditampilkan di window terpisah.
         </div>
       </div>
     </div>
   `;
 
   // Auto-open
-  setTimeout(() => {
-    const link = document.getElementById("ccOpenBtn");
-    if (link) {
-      const win = window.open(loginUrl, '_blank');
-      if (win) {
-        onCarCentroOpened();
-      } else {
-        const statusEl = document.getElementById("ccPopupStatus");
-        if (statusEl) {
-          statusEl.innerHTML = `<span style="color:#f59e0b;"><i class="fas fa-exclamation-triangle"></i> Popup di-block — klik tombol "Buka CarCentro CCTV"</span>`;
-        }
-      }
-    }
-  }, 300);
+  setTimeout(() => openCarCentroPlayer(playerUrl), 300);
 }
 
-function onCarCentroOpened() {
+function openCarCentroPlayer(url) {
   const statusEl = document.getElementById("ccPopupStatus");
-  if (statusEl) {
-    statusEl.innerHTML = `<span style="color:#22c55e;"><i class="fas fa-check-circle"></i> Portal terbuka di tab baru</span>`;
-  }
-  const btn = document.getElementById("ccOpenBtn");
-  if (btn) {
-    btn.innerHTML = '<i class="fas fa-external-link-alt"></i> Buka Lagi';
+  // Open as a popup window with specific size
+  const win = window.open(url, 'carcentro_cctv', 'width=900,height=650,menubar=no,toolbar=no,location=no,status=no');
+  
+  if (win) {
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color:#22c55e;"><i class="fas fa-check-circle"></i> CCTV player terbuka</span>`;
+    }
+    const btn = document.getElementById("ccOpenBtn");
+    if (btn) btn.innerHTML = '<i class="fas fa-video"></i> Buka Lagi';
+  } else {
+    // Popup blocked — try new tab
+    const win2 = window.open(url, '_blank');
+    if (win2) {
+      if (statusEl) statusEl.innerHTML = `<span style="color:#22c55e;"><i class="fas fa-check-circle"></i> Player terbuka di tab baru</span>`;
+    } else {
+      if (statusEl) statusEl.innerHTML = `<span style="color:#f59e0b;"><i class="fas fa-exclamation-triangle"></i> Popup di-block — klik tombol di atas</span>`;
+    }
   }
 }
+
+function onCarCentroOpened() {}
 
 function retryCarCentroCCTV(imei, channel, vehicleName) {
   cleanupCarCentroStream();

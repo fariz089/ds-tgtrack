@@ -1337,6 +1337,107 @@ app.get("/api/video/cc-login", (req, res) => {
   }
 });
 
+// ============================================================
+// CARCENTRO REVERSE PROXY
+// Proxies all CarCentro HTTP resources through our HTTPS server
+// This avoids mixed content issues when loading AoooG DVR player
+// ============================================================
+
+const CC_BASE_URL = config.carcentro.baseUrl || "http://carcentro.aooog.com";
+const CC_AUTH_TOKEN = config.carcentro.username && config.carcentro.password
+  ? Buffer.from(JSON.stringify({ name: config.carcentro.username, pwd: config.carcentro.password })).toString("base64")
+  : "";
+
+// Proxy: Login (server-side, returns session info)
+app.get("/cc-proxy/login", async (req, res) => {
+  try {
+    const localTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" });
+    const loginParams = new URLSearchParams({
+      authentication: CC_AUTH_TOKEN,
+      localTime,
+      "domain[]": new URL(CC_BASE_URL).hostname,
+      _: Date.now().toString(),
+    });
+
+    const resp = await axios.get(`${CC_BASE_URL}/AoooG_WebService.svc/Login?${loginParams}`, {
+      headers: { Accept: "*/*", "User-Agent": "Mozilla/5.0" },
+      timeout: 15000,
+    });
+    res.json({ ok: true, data: resp.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Proxy: Video config for device
+app.get("/cc-proxy/video-config/:deviceId", async (req, res) => {
+  try {
+    const resp = await axios.post(`${CC_BASE_URL}/AoooG_WebService.svc/AjaxSettingParameter`, {
+      authentication: CC_AUTH_TOKEN,
+      proName: "GetDeviceVideoConfig",
+      isCompress: 0,
+      json: JSON.stringify({ DeviceID: parseInt(req.params.deviceId) }),
+    }, {
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      timeout: 15000,
+    });
+    res.json(resp.data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Proxy: AoooG API calls (AjaxSettingParameter, AjaxMaintenance, etc.)
+app.all("/cc-proxy/AoooG_WebService.svc/*", async (req, res) => {
+  try {
+    const targetPath = req.path.replace("/cc-proxy", "");
+    const targetUrl = `${CC_BASE_URL}${targetPath}${req.url.includes("?") ? "?" + req.url.split("?")[1] : ""}`;
+
+    const axiosConfig = {
+      method: req.method,
+      url: targetUrl,
+      headers: {
+        "Content-Type": req.headers["content-type"] || "application/json",
+        Accept: req.headers.accept || "application/json",
+        "User-Agent": "Mozilla/5.0",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      timeout: 30000,
+    };
+
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      axiosConfig.data = req.body;
+    }
+
+    const resp = await axios(axiosConfig);
+    res.status(resp.status).json(resp.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json({ error: err.message });
+  }
+});
+
+// Proxy: Static assets (JS, CSS, WASM, SVG, etc.)
+app.get("/cc-proxy/assets/*", async (req, res) => {
+  try {
+    const targetPath = req.path.replace("/cc-proxy", "");
+    const targetUrl = `${CC_BASE_URL}${targetPath}`;
+
+    const resp = await axios.get(targetUrl, {
+      responseType: "arraybuffer",
+      timeout: 30000,
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+
+    // Forward content type
+    const ct = resp.headers["content-type"] || "application/octet-stream";
+    res.set("Content-Type", ct);
+    res.set("Cache-Control", "public, max-age=3600"); // Cache 1h
+    res.send(Buffer.from(resp.data));
+  } catch (err) {
+    res.status(err.response?.status || 500).send("Proxy error");
+  }
+});
+
 // API: Get vehicle summary for Command Center (36 hours)
 app.get("/api/command-center/vehicles", async (req, res) => {
   try {
@@ -1842,7 +1943,7 @@ server.on("upgrade", (request, socket, head) => {
     return;
   }
 
-  // Route 3: CarCentro Video WebSocket
+  // Route 3: CarCentro Video WebSocket (via our proxy service)
   const ccMatch = url.pathname.match(
     /^\/api\/video\/cc-stream\/([^/]+)\/(\d+)$/
   );
@@ -1870,6 +1971,63 @@ server.on("upgrade", (request, socket, head) => {
         console.error(`[CC-Video] WS error:`, err.message);
         ws.close(1011, err.message);
       }
+    });
+    return;
+  }
+
+  // Route 4: CarCentro raw WebSocket proxy to live.aooog.com:9661
+  // This is used by the AoooG DvrPlayer scripts loaded in carcentro-player.html
+  if (url.pathname === "/cc-proxy/ws") {
+    const ccWsProxy = new (require("ws").Server)({ noServer: true });
+    ccWsProxy.handleUpgrade(request, socket, head, (clientWs) => {
+      console.log("[CC-WS-Proxy] Client connected, bridging to live.aooog.com:9661");
+
+      const upstream = new (require("ws"))("wss://live.aooog.com:9661/", {
+        headers: {
+          Origin: "http://carcentro.aooog.com",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        },
+        rejectUnauthorized: false,
+      });
+
+      upstream.binaryType = "arraybuffer";
+
+      upstream.on("open", () => {
+        console.log("[CC-WS-Proxy] Upstream connected");
+      });
+
+      // Forward messages both directions
+      upstream.on("message", (data) => {
+        if (clientWs.readyState === 1) {
+          try { clientWs.send(data); } catch (e) {}
+        }
+      });
+
+      clientWs.on("message", (data) => {
+        if (upstream.readyState === 1) {
+          try { upstream.send(data); } catch (e) {}
+        }
+      });
+
+      upstream.on("close", (code, reason) => {
+        console.log(`[CC-WS-Proxy] Upstream closed: ${code}`);
+        try { clientWs.close(code, reason); } catch (e) {}
+      });
+
+      clientWs.on("close", (code, reason) => {
+        console.log(`[CC-WS-Proxy] Client closed: ${code}`);
+        try { upstream.close(); } catch (e) {}
+      });
+
+      upstream.on("error", (err) => {
+        console.error("[CC-WS-Proxy] Upstream error:", err.message);
+        try { clientWs.close(1011, "Upstream error"); } catch (e) {}
+      });
+
+      clientWs.on("error", (err) => {
+        console.error("[CC-WS-Proxy] Client error:", err.message);
+        try { upstream.close(); } catch (e) {}
+      });
     });
     return;
   }
