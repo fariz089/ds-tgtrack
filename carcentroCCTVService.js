@@ -500,6 +500,79 @@ class CaptureSession {
         await this.saveDebugScreenshot("device-not-found");
       }
 
+      await sleep(3000); // Wait for device tree to expand
+
+      // ============================================================
+      // STEP 7b: Expand device tree and click on specific channel
+      // ============================================================
+      // CarCentro device tree structure:
+      //   [+] N 7208 UG-GOOFY
+      //       KABIN SUPIR       (channel 1)
+      //       KABIN PENUMPANG   (channel 2)
+      //       BLIND SPOT        (channel 3)
+      //       BAGASI            (channel 4)
+      const channelNames = {
+        1: ["KABIN SUPIR", "CH1", "Channel 1", "驾驶室"],
+        2: ["KABIN PENUMPANG", "CH2", "Channel 2", "乘客舱"],
+        3: ["BLIND SPOT", "CH3", "Channel 3", "盲区"],
+        4: ["BAGASI", "CH4", "Channel 4", "行李舱"],
+      };
+
+      const targetNames = channelNames[this.channel] || [`CH${this.channel}`, `Channel ${this.channel}`];
+      console.log(`[CC-CCTV] [${this.deviceName}] Step 7b: Looking for channel ${this.channel} (${targetNames.join(", ")})...`);
+
+      // First, try to expand the device node if it has a [+] toggle
+      await this.page.evaluate((fullName, shortName) => {
+        // Find the device node and click its expand toggle
+        var treeNodes = document.querySelectorAll(".tree-node, .tree-title, tr, span");
+        for (var i = 0; i < treeNodes.length; i++) {
+          var text = treeNodes[i].textContent.trim();
+          if ((text.includes(fullName) || text.includes(shortName)) && treeNodes[i].offsetParent !== null) {
+            // Look for expand/collapse icon near this node
+            var hitArea = treeNodes[i].querySelector(".tree-hit, .tree-expanded, .tree-collapsed");
+            if (!hitArea && treeNodes[i].parentElement) {
+              hitArea = treeNodes[i].parentElement.querySelector(".tree-hit, .tree-expanded, .tree-collapsed");
+            }
+            if (hitArea) {
+              hitArea.click();
+              return true;
+            }
+            // Also try clicking the node itself to expand
+            treeNodes[i].click();
+            return true;
+          }
+        }
+        return false;
+      }, this.deviceName, busName);
+
+      await sleep(2000);
+
+      // Now click the specific channel
+      const clickedChannel = await this.page.evaluate((names) => {
+        var elements = document.querySelectorAll(".tree-title, .tree-node span, td, span, a, div");
+        for (var i = 0; i < elements.length; i++) {
+          var text = elements[i].textContent.trim();
+          if (elements[i].offsetParent !== null && elements[i].offsetWidth > 5) {
+            for (var j = 0; j < names.length; j++) {
+              if (text === names[j] || text.toUpperCase() === names[j].toUpperCase()) {
+                // Double-click to start video
+                elements[i].dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+                elements[i].click();
+                return text;
+              }
+            }
+          }
+        }
+        return null;
+      }, targetNames);
+
+      if (clickedChannel) {
+        console.log(`[CC-CCTV] [${this.deviceName}] ✅ Selected channel: "${clickedChannel}"`);
+      } else {
+        console.warn(`[CC-CCTV] [${this.deviceName}] Channel ${this.channel} not found, using default view`);
+        await this.saveDebugScreenshot("channel-not-found");
+      }
+
       await sleep(8000); // Wait for video player to connect and render
     } catch (err) {
       console.warn(`[CC-CCTV] [${this.deviceName}] Device click error: ${err.message}`);
@@ -590,20 +663,42 @@ class CaptureSession {
 
       // Try to screenshot just the video area for better quality
       const videoRect = await this.page.evaluate(() => {
+        // CarCentro-specific: look for the video grid container or individual video cells
         var selectors = [
-          "canvas",
+          // CarCentro video player elements
           ".dvr_player_box",
           ".dvr-player",
-          '[class*="video"]',
+          "#player_container",
+          "#videoContainer",
+          // Canvas elements (CarCentro uses libffmpeg.wasm which renders to canvas)
+          "canvas[width]",
+          "canvas",
+          // Generic video containers
+          ".video-container",
+          '[class*="video-grid"]',
           '[class*="player"]',
-          ".panel-body",
+          // The right panel area where video plays (CarCentro layout)
+          ".layout-panel-center .panel-body",
+          ".layout-panel-center",
         ];
 
         for (var i = 0; i < selectors.length; i++) {
-          var el = document.querySelector(selectors[i]);
-          if (el && el.offsetWidth > 100 && el.offsetHeight > 100) {
-            var rect = el.getBoundingClientRect();
-            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+          // Try all matching elements, pick the largest one
+          var els = document.querySelectorAll(selectors[i]);
+          var best = null;
+          var bestArea = 0;
+          for (var j = 0; j < els.length; j++) {
+            if (els[j].offsetWidth > 200 && els[j].offsetHeight > 150) {
+              var area = els[j].offsetWidth * els[j].offsetHeight;
+              if (area > bestArea) {
+                bestArea = area;
+                best = els[j];
+              }
+            }
+          }
+          if (best) {
+            var rect = best.getBoundingClientRect();
+            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, selector: selectors[i] };
           }
         }
         return null;

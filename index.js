@@ -95,6 +95,53 @@ async function getVehiclesList() {
   }
 }
 
+// Global health tracking (updated by main polling loop)
+global.__healthStatus = {
+  lastSuccessfulFetch: null,
+  lastCycleTime: null,
+  tgtTrackStatus: "starting",
+  cycleCount: 0,
+};
+
+// Health check API endpoint
+app.get("/api/health", async (req, res) => {
+  try {
+    const now = Date.now();
+    const health = global.__healthStatus;
+    const staleMins = health.lastSuccessfulFetch
+      ? Math.round((now - health.lastSuccessfulFetch) / 60000)
+      : null;
+
+    const latestADAS = await ADAS.findOne().sort({ event_time: -1 }).select("event_time vehicle_name").lean();
+    const latestDSM = await DSM.findOne().sort({ event_time: -1 }).select("event_time vehicle_name").lean();
+    const latestCoord = await Coordinate.findOne().sort({ event_time: -1 }).select("event_time vehicle_name").lean();
+    const totalVehicles = await Vehicle.countDocuments({ status: "active" });
+
+    const isStale = staleMins !== null && staleMins > 10;
+
+    res.json({
+      status: isStale ? "WARNING" : "OK",
+      uptime_minutes: Math.round(process.uptime() / 60),
+      tgtrack: {
+        status: health.tgtTrackStatus,
+        last_successful_fetch: health.lastSuccessfulFetch ? new Date(health.lastSuccessfulFetch).toISOString() : null,
+        minutes_since_fetch: staleMins,
+        cycle_count: health.cycleCount,
+      },
+      latest_data: {
+        adas: latestADAS ? { time: latestADAS.event_time, vehicle: latestADAS.vehicle_name } : null,
+        dsm: latestDSM ? { time: latestDSM.event_time, vehicle: latestDSM.vehicle_name } : null,
+        coordinate: latestCoord ? { time: latestCoord.event_time, vehicle: latestCoord.vehicle_name } : null,
+      },
+      vehicles: { total_active: totalVehicles },
+      solofleet: global.__solofleetWorker ? { running: true } : { running: false },
+      carcentro: global.__ccVideoService ? { running: true, devices: global.__ccVideoService.deviceMap?.size || 0 } : { running: false },
+    });
+  } catch (err) {
+    res.status(500).json({ status: "ERROR", error: err.message });
+  }
+});
+
 // Dashboard page
 app.get("/", async (req, res) => {
   try {
@@ -2977,10 +3024,18 @@ async function main() {
 
     let cycleCount = 0;
     let firstCycle = config.getHistory === "true" || config.getHistory === true;
+    let lastSuccessfulFetch = Date.now(); // Track last successful data fetch
+    const STALE_DATA_THRESHOLD = 10 * 60 * 1000; // 10 minutes without data = stale
 
     while (true) {
       cycleCount++;
       const now = new Date();
+
+      // Update global health status
+      global.__healthStatus.cycleCount = cycleCount;
+      global.__healthStatus.lastCycleTime = Date.now();
+      global.__healthStatus.lastSuccessfulFetch = lastSuccessfulFetch;
+      global.__healthStatus.tgtTrackStatus = "running";
 
       if (lastLoginTime && Date.now() - lastLoginTime >= RELOGIN_INTERVAL) {
         console.log("\n🔄 ========================================");
@@ -3168,6 +3223,7 @@ async function main() {
           });
 
           firstCycle = false;
+          lastSuccessfulFetch = Date.now();
           console.log("✅ HISTORY MODE COMPLETED! Next cycle will be REALTIME.\n");
         } else {
           startTime = new Date(endTime.getTime() - 60000);
@@ -3177,6 +3233,44 @@ async function main() {
             includeQueue: true,
             pageLimit: 50,
           });
+          lastSuccessfulFetch = Date.now(); // Track successful fetch
+        }
+
+        // Health check: if no successful fetch for too long, force re-login
+        if (!firstCycle && Date.now() - lastSuccessfulFetch > STALE_DATA_THRESHOLD) {
+          console.warn(`\n⚠️ HEALTH CHECK: No successful data fetch for ${Math.round((Date.now() - lastSuccessfulFetch) / 60000)} minutes!`);
+          console.warn("🔄 Forcing re-login to recover...\n");
+
+          try {
+            // Navigate to login page
+            await page.goto(config.login.url, { waitUntil: "networkidle2", timeout: 60000 });
+            await sleep(3000);
+
+            const loginManager = new LoginManager(config);
+            const result = await loginManager.login(page);
+
+            if (result.success) {
+              console.log("✅ Health-check re-login berhasil!");
+              await sleep(2000);
+              const authData3 = await interceptAuthData(page);
+              token = authData3.token;
+              organizeId = authData3.organizeId || "61a22a23e0584dac";
+
+              // Update semua workers
+              videoStreamService.setAuth(token, organizeId);
+              if (globalQueue) { globalQueue.token = token; globalQueue.organizeId = organizeId; }
+              if (coordinateWorker) { coordinateWorker.updateAuth(token, organizeId); coordinateWorker.start(); }
+              if (alarmStoreWorker) { alarmStoreWorker.token = token; alarmStoreWorker.organizeId = organizeId; }
+
+              lastLoginTime = Date.now();
+              lastSuccessfulFetch = Date.now(); // Reset stale timer
+              console.log("✅ All workers updated with fresh token\n");
+            } else {
+              console.error("❌ Health-check re-login gagal, will retry next cycle");
+            }
+          } catch (healthErr) {
+            console.error("❌ Health-check re-login error:", healthErr.message);
+          }
         }
       } catch (error) {
         console.error("✗ Error dalam cycle:", error.message);

@@ -19,6 +19,7 @@
 
 const ADAS = require("./models/adas");
 const DSM = require("./models/dsm");
+const Vehicle = require("./models/vehicle");
 const { getAlarmCategory } = require("./alarmTypes");
 
 class SafetyScoreService {
@@ -221,13 +222,16 @@ class SafetyScoreService {
     const adasAlarms = await ADAS.find(query);
     const dsmAlarms = await DSM.find(query);
 
-    // Get unique vehicles
-    const vehicleNames = [
+    // Get unique vehicles that have alarms in this period
+    const vehicleNamesWithAlarms = [
       ...new Set([
         ...adasAlarms.map((a) => a.vehicle_name),
         ...dsmAlarms.map((d) => d.vehicle_name),
       ]),
     ].filter((v) => v && v !== "Unknown");
+
+    // Get total registered active vehicles from Vehicle collection
+    const totalRegisteredVehicles = await Vehicle.countDocuments({ status: "active" });
 
     let severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
     let categoryBreakdown = { ADAS: 0, DSM: 0, FM: 0, BSD: 0 };
@@ -246,14 +250,15 @@ class SafetyScoreService {
       categoryBreakdown.DSM++;
     });
 
-    // Calculate fleet score normalized by vehicle count
-    const vehicleCount = vehicleNames.length || 1;
+    // Calculate fleet score normalized by total registered vehicle count
+    const vehicleCount = Math.max(totalRegisteredVehicles, vehicleNamesWithAlarms.length, 1);
     const score = this.calculateNormalizedScore(severityCounts, vehicleCount);
 
     return {
       score,
       grade: this.getGrade(score),
-      total_vehicles: vehicleNames.length,
+      total_vehicles: totalRegisteredVehicles,
+      vehicles_with_alarms: vehicleNamesWithAlarms.length,
       total_alarms: adasAlarms.length + dsmAlarms.length,
       category_breakdown: categoryBreakdown,
       severity_counts: severityCounts,
